@@ -2,6 +2,44 @@
 
 All notable changes to `@fdkey/http` will be documented in this file.
 
+## 0.2.0 — 2026-05-10
+
+### Added — browser widget
+
+- **`@fdkey/http/client`** is a new subpath export. Drop a `<div>`,
+  call `fdkeyChallenge(div, { endpoint: '/api/fdkey' })`, the widget
+  fetches a challenge, renders the puzzles, accepts user input
+  (typically an LLM agent), submits, and resolves with the verdict.
+  Total integrator code: ~5 lines.
+- **Data-driven renderer dispatch.** When the VPS ships a new puzzle
+  type whose JSON shape matches an existing pattern, the widget
+  renders it automatically — no SDK update needed. Patterns:
+  - `questions: [...]` → MCQ renderer
+  - `concept` + `options[]` → ranking renderer (T3)
+  - `prompt: string` → freeform renderer (reserved for T4-T6)
+  - Anything else → fallback: dump JSON + generic textarea so the
+    agent can still read it.
+- **Semantic HTML, agent-readable.** The primary consumer is an LLM
+  agent (Playwright/browser-use/computer-use driver). Puzzles render
+  as `<article>` blocks with `<input name="typeN[i].answer">`-style
+  form elements and `<p class="fdkey-instructions">` text verbatim
+  from the VPS. CSS is bonus.
+- **Default styles included.** Class names use `.fdkey-` prefix; pass
+  `defaultStyles: false` to opt out and bring your own.
+- **Submit URL from VPS.** Widget reads `submit_url` from the challenge
+  response — adapts when the SDK is mounted at a non-root path.
+- New `dist/client/` build target compiled via `tsconfig.client.json`
+  (browser-targeted ES2022, DOM lib).
+- Tests: 9 new dispatch tests covering all 4 renderer patterns +
+  contract assertions. Full DOM-level rendering is validated via the
+  live demo at fdkey.com.
+
+### Changed
+
+- `package.json` `exports` map gains `./client` subpath.
+- `scripts.build` now runs BOTH the server (`tsc`) and client
+  (`tsc -p tsconfig.client.json`) builds.
+
 ## 0.1.2 — 2026-05-10
 
 ### Changed — behavior

@@ -1,7 +1,7 @@
 {
   "name": "@fdkey/http",
-  "version": "0.1.2",
-  "description": "FDKEY verification middleware for plain HTTP backends — gate REST/HTTPS routes behind LLM-only puzzles. Drop-in for Express, Fastify, Hono.",
+  "version": "0.2.0",
+  "description": "FDKEY verification middleware for plain HTTP backends — gate REST/HTTPS routes behind LLM-only puzzles. Drop-in for Express, Fastify, Hono. Includes browser widget for puzzle rendering.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,13 +9,19 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./client": {
+      "import": "./dist/client/index.js",
+      "types": "./dist/client/index.d.ts"
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.client.json",
+    "build:server": "tsc",
+    "build:client": "tsc -p tsconfig.client.json",
     "dev": "tsc --watch",
     "test": "vitest run",
-    "prepublishOnly": "tsc"
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "jose": "^5.10.0",
