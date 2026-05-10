@@ -42,8 +42,8 @@ dev = [
 [project.urls]
 Homepage = "https://fdkey.com"
 Dashboard = "https://app.fdkey.com"
-Repository = "https://github.com/fdkey/mcp-sdks"
-Issues = "https://github.com/fdkey/mcp-sdks/issues"
+Repository = "https://github.com/fdkey/sdks"
+Issues = "https://github.com/fdkey/sdks/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fdkey"]

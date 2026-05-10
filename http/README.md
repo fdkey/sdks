@@ -336,8 +336,8 @@ flow is the recommended path for any HTTP backend talking to AI agents.
 
 - Marketing + docs: <https://fdkey.com>
 - Dashboard (sign up + manage keys): <https://app.fdkey.com>
-- Source: <https://github.com/fdkey/mcp-sdks>
-- Issues: <https://github.com/fdkey/mcp-sdks/issues>
+- Source: <https://github.com/fdkey/sdks>
+- Issues: <https://github.com/fdkey/sdks/issues>
 
 ## License
 

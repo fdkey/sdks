@@ -1,3 +1,3 @@
-module github.com/fdkey/mcp-sdks/go
+module github.com/fdkey/sdks/go
 
 go 1.22

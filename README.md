@@ -20,7 +20,7 @@ These SDKs answer **"is this caller actually an LLM?"** with semantic puzzles th
 | [`http/`](./http) | `@fdkey/http` | [npm](https://www.npmjs.com/package/@fdkey/http) | Plain HTTP backends — Express, Fastify, Hono |
 | [`python/`](./python) | `fdkey` | [PyPI](https://pypi.org/project/fdkey/) | MCP servers built on FastMCP |
 | [`rust/`](./rust) | `fdkey` | [crates.io](https://crates.io/crates/fdkey) | Verification primitives — bring your own framework |
-| [`go/`](./go) | — | — | Module path reserved (`github.com/fdkey/mcp-sdks/go`); not yet implemented. Want to write it? See [Contributing](./CONTRIBUTING.md). |
+| [`go/`](./go) | — | — | Module path reserved (`github.com/fdkey/sdks/go`); not yet implemented. Want to write it? See [Contributing](./CONTRIBUTING.md). |
 
 All SDKs speak the same wire format. The scoring service at [`api.fdkey.com`](https://api.fdkey.com) doesn't know which language called it — port to whatever you need; the contract is documented in each SDK's `ARCHITECTURE.md`.
 
@@ -171,4 +171,4 @@ MIT, all four SDKs, all files. See each SDK's `LICENSE` for the formal text.
 - **Project home / try it**: <https://fdkey.com>
 - **Sign up + manage API keys**: <https://app.fdkey.com>
 - **Live demo MCP server**: <https://mcp.fdkey.com/mcp>
-- **Issues**: <https://github.com/fdkey/mcp-sdks/issues>
+- **Issues**: <https://github.com/fdkey/sdks/issues>

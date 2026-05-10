@@ -57,11 +57,11 @@
   "homepage": "https://fdkey.com",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fdkey/mcp-sdks.git",
+    "url": "git+https://github.com/fdkey/sdks.git",
     "directory": "typescript"
   },
   "bugs": {
-    "url": "https://github.com/fdkey/mcp-sdks/issues"
+    "url": "https://github.com/fdkey/sdks/issues"
   },
   "engines": {
     "node": ">=18.17"

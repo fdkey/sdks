@@ -2,7 +2,7 @@
 
 > **FDKEY verification primitives (Rust).** Gate AI-agent access to your
 > tools / API behind LLM-only puzzles. Companion to the TypeScript and
-> Python SDKs at <https://github.com/fdkey/mcp-sdks>.
+> Python SDKs at <https://github.com/fdkey/sdks>.
 
 ## What this crate ships
 
@@ -210,8 +210,8 @@ side if your threat model includes cross-integrator replay.
 
 - Marketing + docs: <https://fdkey.com>
 - Dashboard (sign up + manage keys): <https://app.fdkey.com>
-- Source: <https://github.com/fdkey/mcp-sdks>
-- Issues: <https://github.com/fdkey/mcp-sdks/issues>
+- Source: <https://github.com/fdkey/sdks>
+- Issues: <https://github.com/fdkey/sdks/issues>
 
 ## License
 

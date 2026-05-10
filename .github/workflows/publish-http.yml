@@ -1,0 +1,35 @@
+name: Publish @fdkey/http
+
+on:
+  push:
+    tags:
+      - 'http-v*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: http
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install + build
+        run: |
+          npm install
+          npm run build
+
+      - name: Test
+        run: npm test
+
+      - name: Publish to npm (trusted publishing)
+        run: npm publish --provenance --access public

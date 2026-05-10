@@ -1,0 +1,33 @@
+name: Publish fdkey (crates.io)
+
+on:
+  push:
+    tags:
+      - 'rust-v*'
+
+permissions:
+  id-token: write    # required for crates.io trusted publishing
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test
+
+      - name: Authenticate against crates.io (trusted publishing)
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
