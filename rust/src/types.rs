@@ -18,8 +18,10 @@ pub enum Policy {
     EveryMinutes { minutes: u32 },
 }
 
-/// Configuration passed once to `with_fdkey()` (or constructed manually for
-/// integrator-flexible wiring).
+/// Configuration for the verification primitives. The Rust crate is
+/// framework-agnostic (no `with_fdkey()` wrapper) — construct this and pass
+/// it to `Verifier::new()` or use individual fields when wiring the SDK
+/// into your own request handler.
 #[derive(Debug, Clone)]
 pub struct FdkeyConfig {
     pub api_key: String,
@@ -55,9 +57,11 @@ pub enum Difficulty {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailMode {
-    /// Refuse the call (HTTP 503 / tool-error / etc.). Default.
+    /// Refuse the call (HTTP 503 / tool-error / etc.). Default for
+    /// `on_fail` (failed-puzzle behavior).
     Block,
-    /// Let the call through unverified — useful for soft launches.
+    /// Let the call through unverified. Default for `on_vps_error` so an
+    /// FDKEY outage doesn't brick your service.
     Allow,
 }
 

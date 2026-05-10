@@ -56,8 +56,25 @@ def sensitive_action() -> str:
 
 ## Policies
 
-- `each_call` — verification required for every invocation.
-- `once_per_session` — verification required once per connection.
+Per-tool gating policy — passed as `{"policy": ...}` in the `protect` map:
+
+- `"each_call"` — verification required for every invocation. Use for
+  irreversible actions (payments, deletes).
+- `"once_per_session"` — verification required once per connection. Use
+  for account creation, signup-style flows.
+- `{"type": "every_minutes", "minutes": N}` — verification good for N
+  minutes after the puzzle was solved. Middle ground when "every call"
+  is too aggressive but "once forever" is too loose. The timer does NOT
+  extend on calls — it expires `minutes` after the solve, regardless
+  of activity.
+
+```python
+protect={
+    "delete_account":    {"policy": "each_call"},
+    "register":          {"policy": "once_per_session"},
+    "refresh_dashboard": {"policy": {"type": "every_minutes", "minutes": 15}},
+}
+```
 
 ## Configuration reference
 

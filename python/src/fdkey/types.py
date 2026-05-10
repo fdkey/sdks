@@ -58,7 +58,6 @@ class FdkeyConfig:
     on_vps_error: Literal["block", "allow"] = "allow"
     inline_challenge: bool = False
     vps_url: Optional[str] = None
-    discovery_url: Optional[str] = None
     tags: Optional[dict[str, str]] = None
 
 

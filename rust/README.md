@@ -80,7 +80,19 @@ if result.verified {
 
 ## Per-session policy gating
 
-Plug the same per-session state machine the TS / Python SDKs use into your
+The crate exposes the same three policy variants the TS and Python SDKs
+support — pick the one that fits each tool / route:
+
+```rust
+use fdkey::Policy;
+
+Policy::EachCall                           // verify on every invocation (irreversible actions)
+Policy::OncePerSession                     // verify once per connection (signup-style flows)
+Policy::EveryMinutes { minutes: 15 }       // verification valid for N minutes after solve;
+                                           // does NOT extend on subsequent calls
+```
+
+Plug the per-session state machine the TS / Python SDKs use into your
 MCP server's tool-call dispatch:
 
 ```rust

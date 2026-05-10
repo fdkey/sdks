@@ -97,7 +97,7 @@ mcp-integration/sdks/python/
 ### `src/fdkey/middleware.py`
 
 **Public exports.**
-- `with_fdkey(server, *, api_key, protect=None, difficulty="medium", on_fail="block", on_vps_error="block", inline_challenge=False, vps_url=None, tags=None)` — the wrapper.
+- `with_fdkey(server, *, api_key, protect=None, difficulty="medium", on_fail="block", on_vps_error="allow", inline_challenge=False, vps_url=None, tags=None)` — the wrapper.
 - `get_fdkey_context(server, extra_or_session_id) -> Optional[FdkeyContext]` — read verified state, capability `score`, `tier`, decoded JWT claims for the current session.
 
 **Internals.**
@@ -178,7 +178,7 @@ Shared `httpx.AsyncClient(timeout=5s)`. Cache: `dict[str, object]` (kid → cryp
 | `protect` | `{}` | `{tool_name: {"policy": "each_call" \| "once_per_session" \| {"type": "every_minutes", "minutes": N}}}` |
 | `difficulty` | `"medium"` | `"easy" \| "medium" \| "hard"` — forwarded to the VPS. |
 | `on_fail` | `"block"` | `"block" \| "allow"` — what to do when the agent fails the puzzle. |
-| `on_vps_error` | `"block"` | `"block" \| "allow"` — what to do when the VPS is unreachable. |
+| `on_vps_error` | `"allow"` | `"block" \| "allow"` — what to do when the VPS is unreachable. Default `"allow"` (fail-open) so an FDKEY outage doesn't brick integrator workflows. |
 | `inline_challenge` | `False` | Embed puzzle JSON in the blocked-tool error so the agent can submit without a separate `fdkey_get_challenge` round-trip. |
 | `vps_url` | `https://api.fdkey.com` | Override for self-hosted FDKEY. |
 | `tags` | `None` | Free-form non-PII labels forwarded to FDKEY for analytics. |

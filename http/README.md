@@ -170,7 +170,7 @@ createFdkey({
   vpsUrl: 'https://api.fdkey.com',
   difficulty: 'medium',            // 'easy' | 'medium' | 'hard'
   policy: 'once_per_session',      // or { type: 'every_minutes', minutes: 15 }
-  onVpsError: 'block',             // 'block' (503) or 'allow' — see note below
+  onVpsError: 'allow',             // 'allow' (default, fail-open) or 'block' (503) — see note below
   tags: { env: 'prod' },           // forwarded to FDKEY for analytics
 
   // Session id transport.
@@ -233,8 +233,9 @@ infinite-looping when the VPS is down (they'd otherwise see
 middleware path's `req.fdkey` undefined preserves the "we couldn't
 actually verify this" signal for handlers that care.
 
-If you want strict consistency, leave `onVpsError: 'block'` (default —
-returns 503) and let the agent retry once the VPS recovers.
+If you want strict consistency, set `onVpsError: 'block'` — middleware
+returns 503 and `/fdkey/submit` returns 503, so handlers never see a
+synthetic session. The agent retries once the VPS recovers.
 
 ## Mounting at a non-root path
 

@@ -80,22 +80,41 @@ server.registerTool('sensitive_action', {
 
 ## Policies
 
-- `each_call` — verification required for every invocation. Use for irreversible
-  actions (payments, deletes, irreversible writes).
-- `once_per_session` — verification required once per connection. Use for
-  account creation, signup-style flows.
+Per-tool gating policy — passed as `{ policy: ... }` in the `protect` map:
+
+- `'each_call'` — verification required for every invocation. Use for
+  irreversible actions (payments, deletes).
+- `'once_per_session'` — verification required once per connection. Use
+  for account creation, signup-style flows.
+- `{ type: 'every_minutes', minutes: N }` — verification good for N
+  minutes after the puzzle was solved. Use as a middle ground when
+  "every call" is too aggressive but "once forever" is too loose. Note
+  the timer does NOT extend on calls — it expires `minutes` after the
+  puzzle solve, regardless of activity.
+
+```ts
+protect: {
+  delete_account:    { policy: 'each_call' },
+  register:          { policy: 'once_per_session' },
+  refresh_dashboard: { policy: { type: 'every_minutes', minutes: 15 } },
+}
+```
 
 ## Configuration reference
 
 ```ts
 withFdkey(server, {
-  apiKey: 'fdk_...',                   // required
-  protect: { ... },                    // tool name → policy
-  vpsUrl?: 'https://api.fdkey.com',    // override for self-hosted
-  difficulty?: 'easy' | 'medium' | 'hard',  // default 'medium'
-  onFail?: 'block' | 'allow',          // default 'block' (puzzle failed)
-  onVpsError?: 'block' | 'allow',      // default 'allow' (see below)
-  tags?: { env: 'prod', region: 'eu' },     // forwarded to FDKEY for analytics
+  apiKey: 'fdk_...',                          // required
+  protect: { ... },                           // tool name → policy (above)
+  vpsUrl?: 'https://api.fdkey.com',           // override for self-hosted
+  discoveryUrl?: 'https://...endpoints.json', // multi-VPS routing (Node only; lazy-loaded)
+  difficulty?: 'easy' | 'medium' | 'hard',    // default 'medium'
+  onFail?: 'block' | 'allow',                 // default 'block' — what happens when puzzle is failed
+  onVpsError?: 'block' | 'allow',             // default 'allow' (see below)
+  inlineChallenge?: boolean,                  // default false — embed puzzle JSON in blocked-tool errors
+                                              //   so the agent can submit without a separate
+                                              //   `fdkey_get_challenge` round-trip
+  tags?: { env: 'prod', region: 'eu' },       // free-form non-PII labels forwarded to FDKEY for analytics
 });
 ```
 
@@ -140,16 +159,11 @@ get HTTP-503-style errors instead.
 ## Reading verification context
 
 ```ts
-import { getFdkeyContext } from '@fdkey/mcp';
+import { getFdkeyContext, type FdkeyContext } from '@fdkey/mcp';
 
 server.registerTool('whoami', { /*...*/ }, async (args, extra) => {
   const ctx = getFdkeyContext(server, extra);
   if (ctx?.verified) {
-    // `score` and `tier` are first-class fields on the context.
-    // `score` is a 0..1 float — today it's effectively binary
-    // (1.0 = passed, 0.0 = failed) but the field is reserved for
-    // graduated capability scoring in a future release without an
-    // API change. `tier` is the VPS-issued capability bucket label.
     return {
       content: [{
         type: 'text',
@@ -160,6 +174,20 @@ server.registerTool('whoami', { /*...*/ }, async (args, extra) => {
   return { content: [{ type: 'text', text: 'Not verified yet' }] };
 });
 ```
+
+`FdkeyContext` shape:
+
+```ts
+interface FdkeyContext {
+  verified: boolean;          // true once the agent has solved a challenge
+  verifiedAt: number | null;  // ms epoch of the most recent successful verify
+  score: number | null;       // 0..1 capability score (today binary 1.0/0.0)
+  tier: string | null;        // VPS-issued tier label (e.g. "free", "gold")
+  claims: Record<string, unknown> | null;  // raw decoded JWT, for power users
+}
+```
+
+`score` is reserved as a 0..1 float for graduated capability scoring (combined T1 correctness + T3 tau + future T4-T6 frequency); today the value is effectively binary. The field shape will not change when the internal scoring grows.
 
 ## Links
 
