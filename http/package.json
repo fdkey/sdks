@@ -1,6 +1,6 @@
 {
   "name": "@fdkey/http",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "FDKEY verification middleware for plain HTTP backends — gate REST/HTTPS routes behind LLM-only puzzles. Drop-in for Express, Fastify, Hono.",
   "type": "module",
   "main": "./dist/index.js",
@@ -29,6 +29,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [

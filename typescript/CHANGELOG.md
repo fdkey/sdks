@@ -2,6 +2,22 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.2.1 — 2026-05-10
+
+### Documentation
+
+- README now enumerates the `every_minutes` policy variant alongside
+  `each_call` / `once_per_session`, with a concrete example.
+- `FdkeyContext` interface is documented field-by-field in the
+  "Reading verification context" section so integrators don't have to
+  hunt through the type definitions to see what's available.
+- Configuration reference adds `discoveryUrl` (multi-VPS routing) and
+  `inlineChallenge` (embed puzzle JSON in blocked-tool errors) — both
+  already supported in code, just undocumented.
+
+No code changes. Republishing to align registry README with the
+documented surface.
+
 ## 0.2.0 — 2026-05-09
 
 ### Added
