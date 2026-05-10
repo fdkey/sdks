@@ -2,6 +2,35 @@
 
 All notable changes to `@fdkey/http` will be documented in this file.
 
+## 0.2.1 — 2026-05-10
+
+### Changed — widget UX
+
+- **`requireStart` defaults to `true` now.** Widget renders a "Start
+  FDKEY challenge" button by default, so visitors / agents see the
+  card before the timer ticks. Set `requireStart: false` for fully
+  autonomous flows where the agent reads + submits without UI
+  interaction.
+- **Retry button after every verdict.** Both pass and fail verdicts
+  surface a retry control that re-mounts the widget on the same
+  container with the same opts. Useful for demo pages and for genuine
+  service-error recovery.
+- **Retry available on "service unreachable" too** — transient
+  outages are recoverable without page reload.
+- **Defensive container check.** `fdkeyChallenge(null, ...)` now
+  throws a clear `Error('container must be an HTMLElement')` instead
+  of a cryptic TypeError on the next DOM call.
+- **Distinguish SDK-side 4xx from VPS-side outage** in the error UI.
+  When the SDK returns 503 with `fdkey_unexpected_4xx` (the Phase 2
+  client-bug path), the widget now says "Verification failed —
+  integrator/SDK bug" instead of "service unreachable", which is the
+  accurate diagnosis.
+
+### Tests
+
+- 52/52 pass (no new tests added — UX changes; existing dispatch
+  coverage protects the data-flow contract).
+
 ## 0.2.0 — 2026-05-10
 
 ### Added — browser widget

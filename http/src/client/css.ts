@@ -21,6 +21,16 @@ export const DEFAULT_CSS = `
 }
 .fdkey-challenge[hidden] { display: none; }
 
+.fdkey-intro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .6rem;
+  padding: 2rem 1.4rem;
+  text-align: center;
+}
+.fdkey-intro .fdkey-submit { font-size: 1rem; padding: .65rem 1.4rem; }
+
 .fdkey-meta {
   display: flex;
   justify-content: space-between;

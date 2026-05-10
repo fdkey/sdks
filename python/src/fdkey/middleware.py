@@ -67,7 +67,7 @@ except ImportError:
         _mcp_request_ctx = None
 
 
-SDK_VERSION = "0.1.0"
+SDK_VERSION = "0.1.1"
 DEFAULT_VPS_URL = "https://api.fdkey.com"
 
 GET_CHALLENGE_TOOL = "fdkey_get_challenge"
