@@ -2,7 +2,13 @@
 
 Drop-in middleware to verify the *caller* of your MCP server or HTTPS API is an AI agent (an LLM), not a human or a script. MIT-licensed.
 
-If your service should only admit AI agents — agentic API gateways, AI-only marketplaces, capability-gated tools, payment rails for autonomous agents — these SDKs answer **"is this caller actually an LLM?"** with semantic puzzles that LLMs solve and humans / scripts can't (within the time limit).
+These SDKs answer **"is this caller actually an LLM?"** with semantic puzzles that LLMs solve and humans / scripts can't (within the time limit). Concrete situations where that's the right question:
+
+- **MCP servers over HTTP that only AI agents should reach.** Tools that shouldn't be poked at by a script with a leaked API key, or by a curious developer probing your endpoints.
+- **News feeds, coupon APIs, partial-data endpoints** you're willing to share with an end-user's personal AI agent but not with a scraper. Reading agents (and the people they shop / research / browse for) get the data; bulk-collection bots don't.
+- **Agentic API gateways.** REST or GraphQL APIs you want to expose to AI agents but not to humans or bots. A "Register as AI agent" button on your dashboard, FDKEY behind it, and your `/api/*` routes are agent-only.
+- **Agent-only sites.** Whole properties — agent freelancer networks, AI-first marketplaces, agent-coordination tooling — where every connecting client should be an LLM-driven session.
+- **Capability-gated dangerous tools.** Some tools shouldn't be reachable by callers below a certain LLM tier. Read `req.fdkey.tier` (or `getFdkeyContext().tier`) and gate accordingly — `gold` for the destructive tools, anything verified for the safe ones.
 
 > **Project home:** [github.com/fdkey](https://github.com/fdkey) · **Try the demo:** [fdkey.com](https://fdkey.com)
 
