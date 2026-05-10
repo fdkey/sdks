@@ -29,7 +29,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.2.1';
+const SDK_VERSION = '0.2.2';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -391,12 +391,38 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
           });
         }
         if (err instanceof VpsHttpError && err.status >= 400 && err.status < 500) {
-          // 4xx (e.g. wrong_user, already_submitted) — treat as a failed verification
-          if (onFail === 'allow') {
-            markVerified(session);
-            return mkResult({ verified: true, message: 'Verification skipped per server configuration.' });
+          // Distinguish agent-facing 4xx (the agent's submission is in a bad
+          // state — expired, replayed, wrong session) from client-bug 4xx
+          // (the SDK sent a malformed body — invalid_body, 422, etc.).
+          //
+          // Agent-facing 4xx → `onFail` decides (skip-or-block). These are
+          // ordinary verification failures the agent can recover from with
+          // a fresh challenge.
+          //
+          // Client-bug 4xx → ALWAYS error out loudly. The agent failing the
+          // puzzle is not the same as the SDK sending garbage; `onFail:
+          // 'allow'` should never paper over an integrator/SDK bug.
+          const errCode = typeof err.body.error === 'string' ? err.body.error : '';
+          const AGENT_FACING_4XX = new Set([
+            'challenge_expired', 'already_submitted', 'wrong_user',
+            'invalid_challenge', 'challenge_not_found',
+          ]);
+          if (AGENT_FACING_4XX.has(errCode)) {
+            if (onFail === 'allow') {
+              markVerified(session);
+              return mkResult({ verified: true, message: 'Verification skipped per server configuration.' });
+            }
+            return mkResult({ verified: false, error: errCode || 'verification_failed' });
           }
-          return mkResult({ verified: false, error: err.body.error ?? 'verification_failed' });
+          // Other 4xx (invalid_body, 422, 404, etc.) — integrator/SDK bug.
+          // Surface loudly regardless of onFail/onVpsError. Per the README
+          // contract: fail-open is for VPS UNREACHABLE, not "your body is
+          // wrong".
+          return mkError(
+            `fdkey_unexpected_4xx: FDKEY VPS returned HTTP ${err.status} ${errCode}. ` +
+            `This is an integrator/SDK bug, not a VPS outage. ` +
+            `Check the wire format. (${String(err)})`
+          );
         }
         // 5xx or transport error
         if (onVpsError === 'allow') {

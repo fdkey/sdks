@@ -1,6 +1,6 @@
 [package]
 name = "fdkey"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "FDKEY verification primitives for MCP servers and HTTP backends — gate AI-agent access behind LLM-only puzzles."
 license = "MIT"

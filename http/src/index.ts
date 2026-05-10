@@ -435,8 +435,33 @@ async function processSubmit(
         },
       };
     }
-    // 5xx, unrecognized 4xx, network errors — true outages or
-    // unknown-but-bad responses. Respect onVpsError.
+    // Other VPS 4xx (400 invalid_body, 422 unprocessable, 404 not_found,
+    // etc.) — these are CLIENT bugs: a malformed submit body or a stale
+    // challenge_id reaching a route. NOT outages. Always surface them as
+    // 503 with the underlying VPS error in the message, regardless of
+    // `onVpsError`. Fail-open is for "the VPS is down", not "your body
+    // is wrong" — per the README's contract: "If the FDKEY scoring
+    // service is unreachable, the SDKs default to fail-open ... an FDKEY
+    // outage shouldn't brick your workflow." A 4xx response is the VPS
+    // working correctly, not an outage.
+    if (
+      err instanceof VpsHttpError &&
+      err.status >= 400 &&
+      err.status < 500
+    ) {
+      return {
+        status: 503,
+        body: {
+          error: 'fdkey_unexpected_4xx',
+          message:
+            `FDKEY VPS returned HTTP ${err.status} ${err.body.error ?? ''}. ` +
+            `This is an integrator or SDK bug, not a VPS outage. Check the ` +
+            `submit body shape against the documented wire format.`,
+        },
+      };
+    }
+    // Network errors (timeout, DNS, connection refused) and 5xx — true
+    // outages. Respect onVpsError.
     if (core.config.onVpsError === 'allow') {
       // Fail-open: mark verified with `score: 0` and a sentinel tier.
       //   - `verified: true` so the agent doesn't loop on submit.

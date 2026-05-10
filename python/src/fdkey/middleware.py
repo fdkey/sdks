@@ -484,7 +484,8 @@ def _make_submit_handler(state: _FdkeyState) -> Callable[..., Any]:
             )
         except VpsHttpError as err:
             session.pending_challenge_id = None
-            if err.body.get("error") == "challenge_expired":
+            err_code = err.body.get("error") if isinstance(err.body, dict) else None
+            if err_code == "challenge_expired":
                 return _result_text(
                     json.dumps(
                         {
@@ -498,11 +499,35 @@ def _make_submit_handler(state: _FdkeyState) -> Callable[..., Any]:
                     )
                 )
             if 400 <= err.status < 500:
-                if state.on_fail == "allow":
-                    mark_verified(session)
-                    return _result_text(json.dumps({"verified": True, "message": "Verification skipped per server configuration."}))
-                return _result_text(
-                    json.dumps({"verified": False, "error": err.body.get("error", "verification_failed")})
+                # Distinguish agent-facing 4xx (the agent's submission is in a
+                # bad state — expired, replayed, wrong session) from
+                # client-bug 4xx (the SDK sent a malformed body —
+                # invalid_body, 422, etc.).
+                #
+                # Agent-facing 4xx → on_fail decides. Ordinary verification
+                # failures.
+                # Client-bug 4xx → ALWAYS surface loudly. on_fail='allow'
+                # must not paper over a malformed-submit-body integrator/SDK
+                # bug. Per the README fail-open contract: "If the FDKEY
+                # scoring service is unreachable, the SDKs default to
+                # fail-open." A 4xx response is the VPS working correctly,
+                # not an outage.
+                AGENT_FACING_4XX = {
+                    "challenge_expired", "already_submitted", "wrong_user",
+                    "invalid_challenge", "challenge_not_found",
+                }
+                if err_code in AGENT_FACING_4XX:
+                    if state.on_fail == "allow":
+                        mark_verified(session)
+                        return _result_text(json.dumps({"verified": True, "message": "Verification skipped per server configuration."}))
+                    return _result_text(
+                        json.dumps({"verified": False, "error": err_code or "verification_failed"})
+                    )
+                # Client-bug 4xx — always loud, regardless of on_fail/on_vps_error.
+                return _error_text(
+                    f"fdkey_unexpected_4xx: FDKEY VPS returned HTTP {err.status} "
+                    f"{err_code or ''}. This is an integrator/SDK bug, not a VPS "
+                    f"outage. Check the wire format. ({err})"
                 )
             if state.on_vps_error == "allow":
                 mark_verified(session)

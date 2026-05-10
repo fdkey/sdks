@@ -769,6 +769,49 @@ describe('createFdkey: submit onVpsError=allow', () => {
     expect(stored!.tier).toBe('allow_on_vps_error');
     expect(stored!.score).toBe(0);
   });
+
+  it('does NOT fail-open on VPS 4xx (invalid_body) — surfaces 503 even with onVpsError=allow', async () => {
+    // Per the SDK contract: fail-open is for VPS UNREACHABLE / outage,
+    // NOT for "your body is wrong". A 4xx from the VPS means the SDK or
+    // integrator sent a malformed body — always loud, regardless of
+    // onVpsError. This test guards against regression of the 2026-05
+    // bug where 4xx errors silently passed as verified=true with
+    // tier='allow_on_vps_error'.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ error: 'invalid_body' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    );
+    const fdkey = createFdkey({
+      apiKey: 'fdk_test',
+      vpsUrl: VPS_URL,
+      onVpsError: 'allow',   // even with allow, 4xx is loud
+    });
+    const routes = fdkey.express.routes();
+    const r = makeRes();
+    await routes(
+      makeReq({
+        method: 'POST',
+        path: '/fdkey/submit',
+        headers: { cookie: 'fdkey_session=four-oh-four-sid' },
+        body: { challenge_id: 'cid-1', answers: { type1: ['B'] } },
+      }),
+      r.res,
+      vi.fn(),
+    );
+    expect(r.status).toBe(503);
+    const body = r.body as { error: string; message: string };
+    expect(body.error).toBe('fdkey_unexpected_4xx');
+    expect(body.message).toContain('HTTP 400');
+    expect(body.message).toContain('invalid_body');
+    // No synthetic session should have been minted.
+    const stored = await fdkey.sessionStore.get('four-oh-four-sid');
+    expect(stored).toBeUndefined();
+  });
 });
 
 describe('createFdkey: header strategy missing-header path', () => {
