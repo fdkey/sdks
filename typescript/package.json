@@ -1,0 +1,72 @@
+{
+  "name": "@fdkey/mcp",
+  "version": "0.2.0",
+  "description": "FDKEY verification middleware for MCP servers — gate AI-agent access behind LLM-only puzzles. Runs on Node 18+, Cloudflare Workers, Bun, and Deno.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "prepublishOnly": "tsc"
+  },
+  "peerDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "dependencies": {
+    "jose": "^5.10.0",
+    "zod": "^3.24.0"
+  },
+  "optionalDependencies": {
+    "undici": "^8.2.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/node": "^25.6.0",
+    "typescript": "^5.8.0",
+    "undici": "^8.2.0",
+    "vitest": "^2.1.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "fdkey",
+    "captcha",
+    "verification",
+    "ai-agent",
+    "anti-bot",
+    "middleware",
+    "cloudflare-workers",
+    "edge"
+  ],
+  "author": "FDKEY",
+  "license": "MIT",
+  "homepage": "https://fdkey.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fdkey/mcp-sdks.git",
+    "directory": "typescript"
+  },
+  "bugs": {
+    "url": "https://github.com/fdkey/mcp-sdks/issues"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "name": "@fdkey/http",
+  "version": "0.1.0",
+  "description": "FDKEY verification middleware for plain HTTP backends — gate REST/HTTPS routes behind LLM-only puzzles. Drop-in for Express, Fastify, Hono.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "prepublishOnly": "tsc"
+  },
+  "dependencies": {
+    "jose": "^5.10.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "fdkey",
+    "captcha",
+    "verification",
+    "ai-agent",
+    "anti-bot",
+    "middleware",
+    "express",
+    "fastify",
+    "hono",
+    "http-402",
+    "rest"
+  ],
+  "author": "FDKEY",
+  "license": "MIT",
+  "homepage": "https://fdkey.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fdkey/mcp-sdks.git",
+    "directory": "http"
+  },
+  "bugs": {
+    "url": "https://github.com/fdkey/mcp-sdks/issues"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

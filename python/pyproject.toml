@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fdkey"
+version = "0.1.0"
+description = "FDKEY verification middleware for MCP servers — gate AI-agent access behind LLM-only puzzles."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "FDKEY"}]
+requires-python = ">=3.9"
+keywords = ["mcp", "model-context-protocol", "ai-agent", "verification", "captcha", "fdkey", "anti-bot", "middleware"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Internet :: WWW/HTTP",
+  "Topic :: Security",
+]
+dependencies = [
+  "mcp>=1.0.0",
+  "httpx>=0.27.0",
+  "pyjwt[crypto]>=2.8.0",
+  "cryptography>=42.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "respx>=0.20",
+  "ruff>=0.6",
+]
+
+[project.urls]
+Homepage = "https://fdkey.com"
+Dashboard = "https://app.fdkey.com"
+Repository = "https://github.com/fdkey/mcp-sdks"
+Issues = "https://github.com/fdkey/mcp-sdks/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fdkey"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

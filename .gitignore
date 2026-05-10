@@ -1,0 +1,36 @@
+# Per-SDK build / dependency artifacts. Each SDK also has its own
+# .gitignore for the language-specific bits.
+
+# TypeScript / npm
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
+**/*.tgz
+**/coverage/
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.venv/
+**/venv/
+**/*.egg-info/
+**/build/
+python/dist/
+
+# Rust
+**/target/
+**/Cargo.lock
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Env files (never commit)
+.env
+.env.local
+.env.*.local
