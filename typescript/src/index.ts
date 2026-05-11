@@ -34,7 +34,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.2.10';
+const SDK_VERSION = '0.3.0';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -148,23 +148,28 @@ function extractTier(claims: Record<string, unknown> | null): string | null {
 const GET_CHALLENGE_TOOL = 'fdkey_get_challenge';
 const SUBMIT_CHALLENGE_TOOL = 'fdkey_submit_challenge';
 
+// Tool descriptions deliberately stay generic — no puzzle types, no
+// specific time numbers, no wire-format examples. The challenge response
+// itself carries all puzzle-specific and timing-specific guidance for the
+// agent. This way, changing puzzles or instructions on the VPS does NOT
+// require an SDK release.
 const GET_CHALLENGE_DESC =
   'Request an AI identity verification challenge. Call when a tool returns ' +
   'fdkey_verification_required, when asked to verify, or to verify proactively. ' +
-  '**60s timer starts on return.** Your VERY NEXT action after this must be a ' +
-  'fdkey_submit_challenge tool call with NO intervening visible text. Reason ' +
-  'internally (extended thinking if available), not in chat — visible prose burns ' +
-  'the budget. Explanations come AFTER the verdict.';
+  'The challenge has a short time limit — your VERY NEXT action after this must ' +
+  'be a fdkey_submit_challenge tool call with NO intervening visible text. Reason ' +
+  'internally (extended thinking if available), not in chat — visible prose ' +
+  'delays the submit. Explanations come AFTER the verdict.';
 
 const SUBMIT_CHALLENGE_DESC =
-  'Submit answers to the active FDKEY challenge. **Should be your VERY NEXT tool call after fdkey_get_challenge with NO intervening visible text** (the challenge has a 60s TTL). ' +
-  'Takes ONE argument named `answers` — an object grouped per puzzle type. ' +
-  'Do NOT pass challenge_id; the SDK injects it from session state. ' +
-  'For a typical type1+type3 challenge: ' +
-  'fdkey_submit_challenge({"answers":{"type1":[{"n":1,"answer":"B"},{"n":2,"answer":"A"},{"n":3,"answer":"C"}],"type3":{"n":1,"answer":"F > A > B > G > C"}}}). ' +
-  'The get_challenge response contains a `LITERAL ARGUMENTS` section with the exact JSON to use — copy it, swap in your real answers, pass it as the `answers` tool argument. ' +
-  'Use the EXACT letters from each puzzle\'s options. ' +
-  'On verified:true, retry the blocked tool. On verified:false, call fdkey_get_challenge to retry.';
+  'Submit answers to the active FDKEY challenge. Should be your VERY NEXT tool ' +
+  'call after fdkey_get_challenge with NO intervening visible text. ' +
+  'Takes ONE argument named `answers`. The exact shape is shown in the ' +
+  'get_challenge response — copy the literal arguments object from there, swap ' +
+  'in your real answers, and pass it as the `answers` tool argument. Do NOT ' +
+  'include challenge_id; the SDK injects it from session state. ' +
+  'On verified:true, retry the blocked tool. On verified:false, call ' +
+  'fdkey_get_challenge to retry.';
 
 function mkError(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true as const };
@@ -174,108 +179,45 @@ function mkResult(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj) }] };
 }
 
-function expiresInSeconds(expiresAtIso: string): number {
-  const ms = new Date(expiresAtIso).getTime() - Date.now();
-  return Math.max(0, Math.round(ms / 1000));
-}
-
-/** Reshape the VPS's `example_submission` (HTTP wire format: `{ body: { challenge_id, answers } }`)
- *  into the MCP tool-call argument shape. The VPS-canonical form misleads MCP
- *  agents: they read it, see `body.answers` looks like content, and submit
- *  `{ answers: { challenge_id, answers: {...} } }` — double-wrapped because
- *  the MCP tool's argument is itself named `answers`. Confirmed 2026-05-11
- *  (Claude Desktop). Strip `challenge_id` (the SDK injects it from session)
- *  and re-key the example to a name the agent can't conflate with the tool's
- *  argument. */
-function rewriteExampleForMcp(vpsExample: unknown): unknown {
-  if (!vpsExample || typeof vpsExample !== 'object') return vpsExample;
-  const ex = vpsExample as { body?: { answers?: unknown } };
-  const innerAnswers = ex.body?.answers;
-  if (innerAnswers === undefined) return vpsExample;
-  return {
-    _note:
-      'Call fdkey_submit_challenge with the tool_call_arguments object below as the ' +
-      'tool argument. Replace the placeholder letters with your real answers. Do NOT ' +
-      'include challenge_id — the SDK injects it from session state.',
-    tool_call_arguments: { answers: innerAnswers },
-  };
-}
-
-/** Render the challenge as a directive-shaped text content for MCP agents.
- *  Background: returning the challenge as a JSON dump triggers the agent's
- *  "narrate the tool result to the user" reflex — Claude Desktop's 2026-05-11
- *  transcript showed ~600 tokens of visible chain-of-thought between get and
- *  submit, which at 50-80 tok/s burned 8-15s of the 60s TTL before submit
- *  was queued. Direct insight from a model under test: the JSON frame
- *  pattern-matches to "tool result → explain to user"; an imperative,
- *  command-shaped string pattern-matches to "directive → function-call".
- *  This renderer reframes the response from data-to-narrate into
- *  command-to-execute: ACTION REQUIRED at line 1, puzzles and literal
- *  arguments as labeled sections, NEXT ACTION at the bottom. The VPS still
- *  emits its canonical JSON for REST integrators; this conversion is
- *  MCP-only and happens in the SDK. */
+/** Return the agent-facing text for a challenge response.
+ *
+ *  The canonical path is a passthrough: the VPS renders the full
+ *  directive (puzzles + literal arguments + action markers) server-side
+ *  into `mcp_response_text` and the SDK relays it verbatim. This keeps
+ *  the SDK puzzle-shape-agnostic — adding a puzzle type or changing an
+ *  answer format is a VPS-deploy only, never an SDK release.
+ *
+ *  The fallback (legacy VPS without `mcp_response_text`) is deliberately
+ *  generic: header text + puzzles dumped as a JSON code fence + a hint
+ *  pointing at `example_submission` for the wire shape. No per-type
+ *  branches, no hardcoded prose. If the puzzles change shape the
+ *  fallback still surfaces them to the agent, even if less prettily.
+ */
 function formatChallengeForMcp(c: ChallengeResponse): string {
+  if (typeof c.mcp_response_text === 'string' && c.mcp_response_text.length > 0) {
+    return c.mcp_response_text;
+  }
+
   const parts: string[] = [];
-
-  const ttl = c.expires_in_seconds ?? expiresInSeconds(c.expires_at);
-
-  parts.push(
-    '⚡ ACTION REQUIRED: your NEXT response must be a fdkey_submit_challenge tool call. ' +
-    'Generate NO text before that call. Reason internally only (extended thinking, ' +
-    'NOT visible chat). Any visible prose burns the TTL budget. ' +
-    'Save all explanation for AFTER the verdict.'
-  );
-  parts.push(`Timer: ~${ttl}s remaining on this challenge.`);
-
-  parts.push('');
-  parts.push('━━━ PUZZLES ━━━');
-
-  const puzzles = c.puzzles ?? {};
-
-  const t1 = puzzles['type1'] as
-    | { instructions?: string; questions?: Array<{ n: number; question: string; options: string[] }> }
-    | undefined;
-  if (t1?.questions) {
+  if (c.header) parts.push(c.header);
+  if (c.puzzles) {
     parts.push('');
-    parts.push(`[Type 1] ${t1.instructions ?? ''}`);
-    for (const q of t1.questions) {
-      parts.push('');
-      parts.push(`${q.n}. ${q.question}`);
-      for (const opt of q.options) parts.push(`   ${opt}`);
-    }
+    parts.push('Puzzles:');
+    parts.push('```json');
+    parts.push(JSON.stringify(c.puzzles, null, 2));
+    parts.push('```');
   }
-
-  const t3 = puzzles['type3'] as
-    | { instructions?: string; n?: number; concept?: string; options?: string[] }
-    | undefined;
-  if (t3?.options) {
+  if (c.example_submission) {
     parts.push('');
-    parts.push(`[Type 3] ${t3.instructions ?? ''}`);
-    parts.push(`Concept: "${t3.concept ?? ''}"`);
-    parts.push('Options:');
-    for (const opt of t3.options) parts.push(`  ${opt}`);
+    parts.push('Example submission (replace placeholders before submitting):');
+    parts.push('```json');
+    parts.push(JSON.stringify(c.example_submission, null, 2));
+    parts.push('```');
   }
-
-  // Literal tool arguments — extracted from the SDK-rewritten example.
-  parts.push('');
-  parts.push('━━━ LITERAL ARGUMENTS for fdkey_submit_challenge ━━━');
-  parts.push(
-    'Copy this object as the `answers` tool argument. Replace placeholder letters ' +
-    'with your real answers. Do NOT include challenge_id (the SDK injects it).'
-  );
-  const ex = rewriteExampleForMcp(c.example_submission) as
-    | { tool_call_arguments?: { answers?: unknown } }
-    | undefined;
-  const args = ex?.tool_call_arguments?.answers ?? {};
-  parts.push('');
-  parts.push('```json');
-  parts.push(JSON.stringify(args, null, 2));
-  parts.push('```');
-
-  parts.push('');
-  parts.push('━━━');
-  parts.push('NEXT ACTION: call fdkey_submit_challenge with `answers` set to the JSON above (placeholders replaced). No prose first.');
-
+  if (c.footer) {
+    parts.push('');
+    parts.push(c.footer);
+  }
   return parts.join('\n');
 }
 
@@ -474,108 +416,23 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
 
   // --- Injected tool: fdkey_submit_challenge ---
   //
-  // The `answers` inputSchema is rich on purpose: the agent's MCP client
-  // serializes this Zod schema into JSON Schema and surfaces every
-  // `.describe()` annotation to the LLM. With per-field descriptions and
-  // worked examples in the schema, a frontier LLM constructs the right
-  // body on its FIRST attempt — no reverse-engineering of the wire shape
-  // from the puzzle instructions.
-  //
-  // Backwards compatibility note: agents that send extra fields are fine
-  // — Zod's default behavior on `z.object()` is to strip-extra, not reject.
+  // The `answers` inputSchema is deliberately opaque — `Record<string, unknown>`.
+  // Per-type structure is NOT encoded here because doing so would couple the
+  // SDK to specific puzzle shapes; adding a puzzle type or changing an answer
+  // format would then require an SDK release. Instead, the agent receives the
+  // exact wire shape at runtime via the `example_submission` field on the
+  // get_challenge response — which the VPS renders puzzle-aware. Iteration on
+  // puzzles is a VPS-only concern.
   server.registerTool(
     SUBMIT_CHALLENGE_TOOL,
     {
       description: SUBMIT_CHALLENGE_DESC,
       inputSchema: {
         answers: z
-          .object({
-            type1: z
-              .array(
-                z.object({
-                  n: z
-                    .number()
-                    .int()
-                    .min(1)
-                    .describe(
-                      "Question number (1-indexed) — matches the `n` field on each item in the challenge's type1.questions array."
-                    ),
-                  answer: z
-                    .string()
-                    .describe(
-                      "Single letter A-D matching the option you picked. Just the letter, e.g. 'B'. No explanation."
-                    ),
-                })
-              )
-              .describe(
-                'Type 1 (multiple-choice) answers. One entry per question served. ' +
-                'Example: [{"n":1,"answer":"B"},{"n":2,"answer":"A"},{"n":3,"answer":"C"}]'
-              )
-              .optional(),
-            type2: z
-              .object({
-                n: z.number().int().min(1).describe('Always 1 (single T2 puzzle).'),
-                answer: z.string().describe('Single letter identifying the contradiction.'),
-              })
-              .optional(),
-            type3: z
-              .object({
-                n: z
-                  .number()
-                  .int()
-                  .min(1)
-                  .describe('Always 1 (single T3 puzzle per challenge).'),
-                answer: z
-                  .union([
-                    z
-                      .string()
-                      .describe(
-                        "Letters separated by ' > '. Example: 'F > A > B > G > C'."
-                      ),
-                    z
-                      .array(z.string())
-                      .describe(
-                        'Array of letter strings. Example: ["F","A","B","G","C"].'
-                      ),
-                  ])
-                  .describe(
-                    'Ranking from MOST to LEAST conceptually similar to the concept. ' +
-                    'EITHER a string ("F > A > B > G > C") or an array (["F","A","B","G","C"]) accepted.'
-                  ),
-              })
-              .describe(
-                'Type 3 (semantic ranking) answer. ' +
-                'Example: {"n":1,"answer":"F > A > B > G > C"}'
-              )
-              .optional(),
-            type4: z
-              .object({
-                n: z.number().int().min(1),
-                answer: z
-                  .string()
-                  .describe('Single word — the rule you induced from the examples.'),
-              })
-              .optional(),
-            type5: z
-              .object({
-                n: z.number().int().min(1),
-                answer: z
-                  .string()
-                  .describe('Single word satisfying all the constraints.'),
-              })
-              .optional(),
-            type6: z
-              .object({
-                n: z.number().int().min(1),
-                answer: z
-                  .string()
-                  .describe('Single word for the untranslatable concept.'),
-              })
-              .optional(),
-          })
+          .record(z.string(), z.unknown())
           .describe(
-            'Answers grouped by puzzle type. Only include types that were served in your challenge ' +
-            '(see `types_served` on the challenge response). Each type has its own answer shape.'
+            'Per-type answers object. Copy the literal shape from the ' +
+            '`example_submission` field of the get_challenge response.'
           ),
       },
     },
@@ -585,9 +442,9 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
         // Two real causes for this state:
         //  (a) the agent submitted before calling fdkey_get_challenge.
         //  (b) the agent's prose generation between get and submit
-        //      exceeded the ~60s TTL, the SDK already submitted (or
-        //      cleared state) on a previous failed attempt, and this
-        //      is the second-attempt no-op.
+        //      exceeded the challenge TTL, the SDK already submitted
+        //      (or cleared state) on a previous failed attempt, and
+        //      this is the second-attempt no-op.
         // Either way the recovery is the same — fetch a fresh
         // challenge — but the message has to make (b) discoverable
         // so the agent learns to solve silently next time.
@@ -596,8 +453,8 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
           error: 'no_active_challenge',
           message:
             `No active challenge in this session. Either ${GET_CHALLENGE_TOOL} ` +
-            `was never called, OR a previous challenge already expired (TTL is ~60s, ` +
-            `including any prose you generate between tool calls). ` +
+            `was never called, OR a previous challenge already expired (the ` +
+            `time limit includes any prose you generate between tool calls). ` +
             `Call ${GET_CHALLENGE_TOOL} to start a fresh one, then submit ` +
             `IMMEDIATELY without writing analysis prose in between — the clock ` +
             `is running.`,

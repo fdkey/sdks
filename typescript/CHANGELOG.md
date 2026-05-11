@@ -2,6 +2,51 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.3.0 — 2026-05-11
+
+### Changed — SDK is now puzzle-agnostic; all agent-facing prose lives on the VPS
+
+Architectural cleanup. The principle: changing puzzles, answer formats,
+instructions, examples, or any agent-facing prose must NEVER require an
+SDK release. The SDK is integration plumbing; everything domain-specific
+to the verification gate lives on the VPS.
+
+**What moved out of the SDK:**
+
+- `formatChallengeForMcp` no longer renders puzzles or builds the
+  directive. It returns `c.mcp_response_text` verbatim when present
+  (the canonical path with VPS 2026-05-11+). When absent, it falls
+  back to a fully generic shell: header + puzzles dumped as a JSON
+  code fence + example_submission as a JSON code fence + footer.
+  No per-type branches, no hardcoded prose, no section dividers.
+- `rewriteExampleForMcp` removed. The VPS now emits the MCP-shaped
+  `example_submission` directly (`{ _note, tool_call_arguments: { answers } }`
+  for `client_type: 'mcp'`; `{ _note, body: { challenge_id, answers } }`
+  otherwise). The SDK relays whatever the VPS sends.
+- `fdkey_submit_challenge` `inputSchema` reverted to opaque
+  `answers: z.record(z.string(), z.unknown())`. Per-type Zod objects
+  removed — they coupled the SDK to specific puzzle shapes. Agents
+  get the literal wire shape from `example_submission` at runtime.
+- `SUBMIT_CHALLENGE_DESC` no longer embeds a type1+type3 JSON example.
+- Specific time numbers ("60s") removed from all agent-facing strings.
+  Replaced with "short time limit" / "the clock is running" framing.
+  Agents can't measure time anyway; urgency creates pressure, the
+  precise value is operational state that belongs to the VPS.
+
+**Net result:** adding a puzzle type, changing an answer format,
+tweaking the directive wording, or adjusting the TTL is now a VPS
+deploy with zero SDK churn. The SDK still owns: protocol plumbing
+(tool registration, session lifecycle, JWT verify, well-known fetch,
+DO-store hook), generic error messages on paths the VPS can't reach
+(`fdkey_service_unavailable`, `fdkey_unexpected_4xx`), and the
+`fdkey_get_challenge` / `fdkey_submit_challenge` tool descriptions
+(static MCP `tools/list` metadata — these stay puzzle-agnostic, no
+times, no per-type examples).
+
+**Migration:** none for integrators. The SDK accepts the same config
+shape, the wrapped server behaves the same way. Anyone reading the
+JSON Schema for `fdkey_submit_challenge` will see a looser schema.
+
 ## 0.2.10 — 2026-05-11
 
 ### Changed — lock down the SessionStore mutation contract

@@ -183,14 +183,17 @@ describe('e2e: full /v1/challenge → /v1/submit → JWT verify round-trip', () 
     const body1 = mock.lastChallengeBody as Record<string, unknown>;
     expect(body1.client_type).toBe('mcp');
     expect(body1.difficulty).toBe('medium');
-    // get_challenge returns a directive-shaped text content (not JSON) as of
-    // 0.2.8 — see formatChallengeForMcp for rationale. Per-puzzle rendering
-    // depends on the real VPS shape (not this mock's stub); just assert the
-    // frame markers are present.
+    // As of 0.3.0, the SDK is puzzle-agnostic: when the VPS supplies
+    // `mcp_response_text` it's returned verbatim; otherwise the SDK falls back
+    // to a generic shell (header + puzzles JSON + footer). This mock doesn't
+    // set `mcp_response_text` so we exercise the fallback path. Assert the
+    // fallback surfaces the VPS-supplied header + footer + the puzzles
+    // (rendered as JSON, opaquely — no per-type knowledge).
     const challengeText = r1.content[0].text!;
-    expect(challengeText).toMatch(/ACTION REQUIRED/);
-    expect(challengeText).toMatch(/LITERAL ARGUMENTS/);
-    expect(challengeText).toMatch(/NEXT ACTION/);
+    expect(challengeText).toContain('go'); // mock VPS header
+    expect(challengeText).toContain('done'); // mock VPS footer
+    expect(challengeText).toContain('Puzzles:');
+    expect(challengeText).toContain('"type1"');
 
     // 2. Agent calls fdkey_submit_challenge with answers → middleware POSTs
     //    /v1/submit, gets a JWT, verifies it offline against the mock

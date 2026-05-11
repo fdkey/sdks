@@ -9,17 +9,22 @@ export interface ChallengeResponse {
   header?: string;
   puzzles: Record<string, unknown>;
   footer?: string;
-  /** Wire-format teaching aid added by the VPS (2026-05-11+). Shows the
-   *  exact JSON the agent should POST to /v1/submit. Contains a `_note`
-   *  flagging that the placeholder letters must be replaced, and a `body`
-   *  with the literal shape. Optional for older VPS versions. */
-  example_submission?: {
-    _note?: string;
-    body?: {
-      challenge_id?: string;
-      answers?: Record<string, unknown>;
-    };
-  };
+  /** Wire-format teaching aid added by the VPS (2026-05-11+). The exact
+   *  shape varies by `client_type`:
+   *    - `client_type: 'mcp'` → `{ _note, tool_call_arguments: { answers } }`
+   *      (literal MCP tool argument object; no challenge_id — SDK injects it)
+   *    - other / unset       → `{ _note, body: { challenge_id, answers } }`
+   *      (literal HTTP POST body for /v1/submit)
+   *  Both shapes are passed through to the agent as opaque data; the SDK
+   *  doesn't peek at puzzle-type fields. Optional for older VPS versions. */
+  example_submission?: Record<string, unknown>;
+  /** Pre-rendered directive-shaped text for MCP clients (VPS 2026-05-11+).
+   *  When present, the SDK returns this verbatim as the get_challenge tool
+   *  result content. This keeps ALL agent-facing prose (puzzles, instructions,
+   *  examples, timing language) in the VPS — prompt iteration is a VPS-deploy
+   *  only, no SDK release needed. Older VPS responses won't include this; the
+   *  SDK falls back to a generic JSON-code-fence rendering. */
+  mcp_response_text?: string;
 }
 
 export interface SubmitResponse {
