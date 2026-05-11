@@ -29,7 +29,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.2.5';
+const SDK_VERSION = '0.2.6';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -153,10 +153,11 @@ const GET_CHALLENGE_DESC =
   'next tool call. Write any explanation AFTER you have the verdict.';
 
 const SUBMIT_CHALLENGE_DESC =
-  'Submit answers to the active FDKEY challenge. The `answers` object groups submissions per puzzle type. ' +
-  'For a typical challenge served with type1+type3, the body looks like: ' +
-  '{"type1":[{"n":1,"answer":"B"},{"n":2,"answer":"A"},{"n":3,"answer":"C"}],"type3":{"n":1,"answer":"F > A > B > G > C"}}. ' +
-  'The `example_submission` field in the get_challenge response shows this exact shape with your real challenge_id. ' +
+  'Submit answers to the active FDKEY challenge. This tool takes ONE argument named `answers` — its value is an object grouped per puzzle type. ' +
+  'Do NOT pass challenge_id; the SDK injects it from session state. ' +
+  'For a typical challenge served with type1+type3, the tool call looks like: ' +
+  'fdkey_submit_challenge({"answers":{"type1":[{"n":1,"answer":"B"},{"n":2,"answer":"A"},{"n":3,"answer":"C"}],"type3":{"n":1,"answer":"F > A > B > G > C"}}}). ' +
+  'The get_challenge response carries an `example_submission.tool_call_arguments` field showing the literal arguments object for your current challenge — copy that, replace placeholder letters with your real answers, and pass it as the tool argument. ' +
   'Use the EXACT letters from each puzzle\'s options. ' +
   'On verified:true, retry the tool that was blocked. On verified:false, call fdkey_get_challenge to try again.';
 
@@ -173,6 +174,28 @@ function expiresInSeconds(expiresAtIso: string): number {
   return Math.max(0, Math.round(ms / 1000));
 }
 
+/** Reshape the VPS's `example_submission` (HTTP wire format: `{ body: { challenge_id, answers } }`)
+ *  into the MCP tool-call argument shape. The VPS-canonical form misleads MCP
+ *  agents: they read it, see `body.answers` looks like content, and submit
+ *  `{ answers: { challenge_id, answers: {...} } }` — double-wrapped because
+ *  the MCP tool's argument is itself named `answers`. Confirmed 2026-05-11
+ *  (Claude Desktop). Strip `challenge_id` (the SDK injects it from session)
+ *  and re-key the example to a name the agent can't conflate with the tool's
+ *  argument. */
+function rewriteExampleForMcp(vpsExample: unknown): unknown {
+  if (!vpsExample || typeof vpsExample !== 'object') return vpsExample;
+  const ex = vpsExample as { body?: { answers?: unknown } };
+  const innerAnswers = ex.body?.answers;
+  if (innerAnswers === undefined) return vpsExample;
+  return {
+    _note:
+      'Call fdkey_submit_challenge with the tool_call_arguments object below as the ' +
+      'tool argument. Replace the placeholder letters with your real answers. Do NOT ' +
+      'include challenge_id — the SDK injects it from session state.',
+    tool_call_arguments: { answers: innerAnswers },
+  };
+}
+
 function challengePayload(c: ChallengeResponse) {
   return {
     expires_in_seconds: c.expires_in_seconds ?? expiresInSeconds(c.expires_at),
@@ -180,12 +203,9 @@ function challengePayload(c: ChallengeResponse) {
     types_served: c.types_served,
     header: c.header,
     puzzles: c.puzzles,
-    // Pass-through the VPS's example_submission so the agent sees the
-    // exact wire shape it must POST. Without this, agents have to
-    // discover the wrapper structure by trial-and-error, which is brutal
-    // on a 60-second timer (confirmed 2026-05-11 — Claude burned its
-    // first challenge entirely on schema discovery).
-    example_submission: c.example_submission,
+    // Reshape VPS's HTTP-wire example into the MCP tool-call argument shape.
+    // See `rewriteExampleForMcp` for the rationale.
+    example_submission: rewriteExampleForMcp(c.example_submission),
     footer: c.footer,
   };
 }

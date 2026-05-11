@@ -2,6 +2,31 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.2.6 — 2026-05-11
+
+### Fixed — double-wrapped submit body from MCP agents
+
+The VPS's `example_submission` field is the HTTP wire shape (`{body: {challenge_id, answers}}`).
+MCP agents reading that field copied the entire `body` object into the
+`fdkey_submit_challenge` tool's `answers` argument, producing
+`{answers: {challenge_id: "...", answers: {type1, type3}}}` — double-wrapped
+because the MCP tool's argument is itself named `answers`. VPS rejected the
+submit with `invalid_body`. Confirmed by Claude Desktop's 2026-05-11 retest:
+1st-try success on the timing front (HEADER guidance worked), but the
+example still misled the format.
+
+- **SDK now reshapes `example_submission` for MCP consumers.** The VPS keeps
+  emitting the canonical HTTP body (for REST integrators); the SDK rewrites
+  it before returning the get_challenge result to the agent. New shape:
+  `{ _note, tool_call_arguments: { answers: {...} } }`. The key
+  `tool_call_arguments` can't be confused with the tool's argument name,
+  and `challenge_id` is omitted (SDK injects from session).
+- `fdkey_submit_challenge` tool description updated to point at
+  `example_submission.tool_call_arguments` and spell out "do NOT pass
+  challenge_id".
+
+No VPS change required.
+
 ## 0.2.5 — 2026-05-11
 
 ### Changed — agent-facing copy to teach the 60s timing constraint
