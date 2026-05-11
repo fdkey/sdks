@@ -310,6 +310,49 @@ Cache TTL: 1 h. Fetch timeout: 5 s.
 
 ## § 5 — Cross-cutting concerns
 
+### Security model — chain of bindings
+
+The 0.3.0 ticketing system closes the "random scripts farm puzzles
+forever" abuse vector. The full chain that prevents agent-side abuse:
+
+1. **Per-call ticket binding (SDK-side).** The 402 mints both a session
+   id (cookie + `X-FDKEY-Session` response header) AND a signed ticket
+   (HS256 JWT, `sid` claim, default 5-min TTL). `/fdkey/challenge` and
+   `/fdkey/submit` require a valid Bearer ticket; `/fdkey/submit`
+   additionally enforces `ticket.sid === session.sid`. See
+   `src/ticket.ts` and `requireValidTicket` in `src/index.ts`.
+
+2. **Per-integrator ticket signing.** `ticketSecret` is required (min
+   32 bytes) at `createFdkey()` startup. Different integrators sign with
+   different secrets, so a ticket issued at A doesn't verify at B.
+
+3. **Per-integrator session storage.** Each integrator runs its own
+   `SessionStore`. A cookie issued at A doesn't resolve to anything at
+   B — the cookie domain is A's domain, and B's store has no entry for
+   that sid even if a cookie were somehow forwarded.
+
+4. **VPS-side challenge binding.** When the SDK forwards the submit to
+   `api.fdkey.com/v1/submit`, the VPS checks `session.user_id ===
+   req.userId` — i.e. the API key that issued the challenge must be
+   the same API key submitting the answers. Returns 403 `wrong_user`
+   otherwise. This holds even if a ticket somehow leaked cross-
+   integrator (which #2 already prevents).
+
+5. **JWT scope (defense in depth).** The VPS-issued JWT has `aud`
+   bound to the integrator's `vps_users.id`. The agent never sees it
+   (server-to-server), but if it did, replay at another integrator
+   wouldn't pass `aud` validation. The SDK currently doesn't validate
+   `aud` itself (it doesn't know the integrator's `vps_users.id` at
+   verify time) — that's a documented gap, mitigated by #4 and by
+   the JWT lifetime (~5min default).
+
+Net effect: the only "free" surface is the integrator's own protected
+route, which is *supposed* to be hittable without state — that's the
+bootstrap. Everything downstream is gated by either the ticket, the
+session, or the integrator's API key. Verifications don't transfer
+between integrators by construction (different `apiKey`s, different
+`ticketSecret`s, different cookie domains, different stores).
+
 ### Forward-compat capability score
 
 `FdkeyContext.score` is a 0..1 float reserved for graduated capability scoring. Today the VPS issues effectively-binary values (1.0 = passed, 0.0 = failed). The future graduated scoring (combined T1 correctness + T3 tau + T4-T6 frequency) lands without an API change.
