@@ -29,7 +29,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.2.2';
+const SDK_VERSION = '0.2.3';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -147,7 +147,11 @@ const GET_CHALLENGE_DESC =
   'Request an AI identity verification challenge. Call this when a tool returns fdkey_verification_required, when asked to verify, or to verify proactively. There is a time limit on your answers.';
 
 const SUBMIT_CHALLENGE_DESC =
-  'Submit answers to the active FDKEY challenge. On verified:true, retry the tool that was blocked. On verified:false, call fdkey_get_challenge to try again.';
+  'Submit answers to the active FDKEY challenge. The `answers` object groups submissions per puzzle type. ' +
+  'For a typical challenge served with type1+type3, the body looks like: ' +
+  '{"type1":[{"n":1,"answer":"B"},{"n":2,"answer":"A"},{"n":3,"answer":"C"}],"type3":{"n":1,"answer":"F > A > B > G > C"}}. ' +
+  'Use the EXACT letters from each puzzle\'s options. ' +
+  'On verified:true, retry the tool that was blocked. On verified:false, call fdkey_get_challenge to try again.';
 
 function mkError(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true as const };
@@ -359,11 +363,111 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
   );
 
   // --- Injected tool: fdkey_submit_challenge ---
+  //
+  // The `answers` inputSchema is rich on purpose: the agent's MCP client
+  // serializes this Zod schema into JSON Schema and surfaces every
+  // `.describe()` annotation to the LLM. With per-field descriptions and
+  // worked examples in the schema, a frontier LLM constructs the right
+  // body on its FIRST attempt — no reverse-engineering of the wire shape
+  // from the puzzle instructions.
+  //
+  // Backwards compatibility note: agents that send extra fields are fine
+  // — Zod's default behavior on `z.object()` is to strip-extra, not reject.
   server.registerTool(
     SUBMIT_CHALLENGE_TOOL,
     {
       description: SUBMIT_CHALLENGE_DESC,
-      inputSchema: { answers: z.record(z.string(), z.unknown()) },
+      inputSchema: {
+        answers: z
+          .object({
+            type1: z
+              .array(
+                z.object({
+                  n: z
+                    .number()
+                    .int()
+                    .min(1)
+                    .describe(
+                      "Question number (1-indexed) — matches the `n` field on each item in the challenge's type1.questions array."
+                    ),
+                  answer: z
+                    .string()
+                    .describe(
+                      "Single letter A-D matching the option you picked. Just the letter, e.g. 'B'. No explanation."
+                    ),
+                })
+              )
+              .describe(
+                'Type 1 (multiple-choice) answers. One entry per question served. ' +
+                'Example: [{"n":1,"answer":"B"},{"n":2,"answer":"A"},{"n":3,"answer":"C"}]'
+              )
+              .optional(),
+            type2: z
+              .object({
+                n: z.number().int().min(1).describe('Always 1 (single T2 puzzle).'),
+                answer: z.string().describe('Single letter identifying the contradiction.'),
+              })
+              .optional(),
+            type3: z
+              .object({
+                n: z
+                  .number()
+                  .int()
+                  .min(1)
+                  .describe('Always 1 (single T3 puzzle per challenge).'),
+                answer: z
+                  .union([
+                    z
+                      .string()
+                      .describe(
+                        "Letters separated by ' > '. Example: 'F > A > B > G > C'."
+                      ),
+                    z
+                      .array(z.string())
+                      .describe(
+                        'Array of letter strings. Example: ["F","A","B","G","C"].'
+                      ),
+                  ])
+                  .describe(
+                    'Ranking from MOST to LEAST conceptually similar to the concept. ' +
+                    'EITHER a string ("F > A > B > G > C") or an array (["F","A","B","G","C"]) accepted.'
+                  ),
+              })
+              .describe(
+                'Type 3 (semantic ranking) answer. ' +
+                'Example: {"n":1,"answer":"F > A > B > G > C"}'
+              )
+              .optional(),
+            type4: z
+              .object({
+                n: z.number().int().min(1),
+                answer: z
+                  .string()
+                  .describe('Single word — the rule you induced from the examples.'),
+              })
+              .optional(),
+            type5: z
+              .object({
+                n: z.number().int().min(1),
+                answer: z
+                  .string()
+                  .describe('Single word satisfying all the constraints.'),
+              })
+              .optional(),
+            type6: z
+              .object({
+                n: z.number().int().min(1),
+                answer: z
+                  .string()
+                  .describe('Single word for the untranslatable concept.'),
+              })
+              .optional(),
+          })
+          .describe(
+            'Answers grouped by puzzle type. Only include types that were served in your challenge ' +
+            '(see `types_served` on the challenge response). Each type has its own answer shape.'
+          ),
+      },
     },
     async (args, extra) => {
       const session = getSession((extra as { sessionId?: string }).sessionId ?? 'stdio');

@@ -2,6 +2,45 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.2.3 — 2026-05-11
+
+### Changed — fdkey_submit_challenge tool surface
+
+- **inputSchema is now a real template.** The `answers` field used to
+  be `z.record(z.string(), z.unknown())` — a black-box "any object"
+  that gave the LLM zero hints. Replaced with a typed-per-puzzle-type
+  Zod schema where every field carries a `.describe()` annotation.
+  The MCP client serializes this to JSON Schema and surfaces every
+  description + example to the LLM. Result: a frontier model
+  constructs the right body on its FIRST tool call, no
+  reverse-engineering from puzzle instructions required.
+- **Tool description carries a worked example.** First sentence now
+  shows the literal JSON shape for a type1+type3 submission. Agents
+  that skim the description (most do) see the answer before reading
+  the schema.
+- **type3 answer accepts both string and array.** Reflects the
+  companion VPS change (same date) where Zod was loosened to accept
+  `"F > A > B"` strings — faithful agents following the puzzle's
+  printed instructions ("letters separated by ' > '") now submit
+  successfully without having to know it's actually an array on the
+  scorer side.
+
+### Why this matters
+
+Before 0.2.3, a frontier LLM (Claude 4.5) connected via Claude
+Desktop to our demo MCP server tried 7 different submit shapes
+before timing out. Each 60-second challenge expired before it could
+guess correctly. The root cause was the opaque inputSchema combined
+with a strict VPS that rejected the format the agent was being told
+to send. With 0.2.3 + the VPS schema relaxation, the agent reads the
+tool's inputSchema, sees a typed object with examples, sends the
+right body the first time.
+
+### Migration
+
+No breaking changes. Existing integrators get richer tool
+documentation surfaced to their agents automatically.
+
 ## 0.2.2 — 2026-05-10
 
 ### Changed — behavior
