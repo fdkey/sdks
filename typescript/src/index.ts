@@ -18,7 +18,12 @@ import { StaticRouter } from './router-static.js';
 import { createSessionStore, type SessionStore } from './session-store.js';
 import { WellKnownClient } from './well-known.js';
 
-export type { FdkeyConfig, Policy, AgentMeta, IntegratorMeta, ChallengeMeta } from './types.js';
+export type { FdkeyConfig, Policy, AgentMeta, IntegratorMeta, ChallengeMeta, SessionState } from './types.js';
+export type { SessionStore } from './session-store.js';
+// Re-exported so integrators implementing a custom SessionStore (e.g. DO-storage-backed)
+// can construct fresh state without duplicating the field defaults. Stable across the
+// SessionState shape — if fields are added, update this and pin a major.
+export { newSession } from './guard.js';
 
 /** @internal Test-only export. Not part of the supported public API;
  *  may change or disappear without notice. Used by `index.test.ts` to
@@ -29,7 +34,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.2.8';
+const SDK_VERSION = '0.2.9';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -313,7 +318,12 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
   // Bounded per-server session store. See session-store.ts for the
   // full TTL + LRU eviction contract; the wrapped server itself only
   // sees `get()` and `peek()`.
-  const store = createSessionStore();
+  // Pluggable session store. Default is in-memory (`createSessionStore`)
+  // which is fine for stdio, Node servers, and most HTTP integrations.
+  // Cloudflare DO integrators MUST pass a persistent implementation —
+  // DOs hibernate after a few seconds of idle and rebuild `this` on resume,
+  // dropping the in-memory Map. See FdkeyConfig.sessionStore in types.ts.
+  const store = config.sessionStore ?? createSessionStore();
   const getSession = (id: string) => store.get(id);
 
   // --- Agent metadata capture (Step 2A + 2A.5, 2026-05-02) -----------------

@@ -2,6 +2,49 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.2.9 — 2026-05-11
+
+### Fixed — orphaned challenges on Cloudflare Workers / DO hibernation
+
+Production data (2026-05-11, against `mcp.fdkey.com`) revealed a pattern
+where every consecutive get_challenge call from the same MCP session
+had: ~50% sessions in DB with `status='pending'` and **zero submission
+rows** — the agent's submit attempt never reached the VPS. Submits that
+DID reach the VPS completed in 9-19s (well inside the 60s TTL) and were
+verified. The split correlated with the gap between tool calls: short
+gaps (<20s) succeeded, longer gaps (>30s) orphaned.
+
+Root cause: the SDK's session map (`createSessionStore` in `session-store.ts`)
+is in-memory only. Cloudflare Durable Objects hibernate after a few
+seconds of idle and rebuild `this` on resume; `init()` runs again with
+a fresh empty Map, so `session.pendingChallengeId` (set by get_challenge
+on the previous hot instance) is gone when submit_challenge arrives.
+The SDK's submit handler then returns `no_active_challenge` locally
+without ever POSTing to the VPS — which is exactly why those pending
+sessions had no submission record.
+
+### Added — `FdkeyConfig.sessionStore` (pluggable session store)
+
+- `FdkeyConfig` gains an optional `sessionStore` field. Default is the
+  existing in-memory `createSessionStore()`; integrators can pass any
+  `SessionStore` implementation.
+- New top-level exports: `SessionStore` interface, `SessionState` type,
+  and `newSession()` factory — everything an integrator needs to wire
+  up a persistent backing.
+- Cloudflare Workers / Durable Object integrators should pass a store
+  backed by `ctx.storage.sql` (SQLite-backed DO storage; synchronous,
+  survives hibernation). The recommended pattern uses a Proxy on the
+  returned `SessionState` so the SDK's existing direct-property
+  mutations auto-flush to storage without API churn elsewhere.
+
+### Migration
+
+No breaking changes. Existing integrators (stdio, Node servers, single-
+process HTTP) keep the in-memory default. Workers integrators using the
+mcp-cloudflare pattern must opt-in to the DO-backed store — without it,
+challenges issued during a "warm" window will work but any cross-
+hibernation submit will silently no-op.
+
 ## 0.2.8 — 2026-05-11
 
 ### Changed — escape the JSON-narration trap with a directive-shaped response

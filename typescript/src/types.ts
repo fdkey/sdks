@@ -1,3 +1,5 @@
+import type { SessionStore } from './session-store.js';
+
 export type Policy =
   | { type: 'once_per_session' }
   | { type: 'each_call' }
@@ -39,6 +41,18 @@ export interface FdkeyConfig {
    *  server-side at 16 keys, 50 chars/key, 200 chars/value — extra
    *  fields are rejected with HTTP 400. */
   tags?: Record<string, string>;
+
+  /** Override the session store implementation. The default is an
+   *  in-memory `Map` (see `createSessionStore` in `session-store.ts`).
+   *  Provide a custom implementation when the integrator runtime can
+   *  lose in-memory state between requests — most notably Cloudflare
+   *  Durable Objects, which hibernate after a few seconds of idle and
+   *  rebuild `this` on resume, dropping any non-persisted Map.
+   *
+   *  For Workers/DO integrators: back this with `ctx.storage.sql` so
+   *  pendingChallengeId, verified, and verifiedAt survive hibernation.
+   *  See the integrator README for a worked example. */
+  sessionStore?: SessionStore;
 }
 
 export interface SessionState {
