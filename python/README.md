@@ -8,13 +8,23 @@
 ## What it does
 
 - Injects two MCP tools into your server: `fdkey_get_challenge` and
-  `fdkey_submit_challenge`.
+  `fdkey_submit_challenge`, with stable MCP tool annotations
+  (`title`, `readOnlyHint`, `destructiveHint`, `idempotentHint`,
+  `openWorldHint`) for client trust hints. Annotations degrade
+  gracefully on older `mcp` package versions that lack the keyword.
 - Wraps the tools you want to protect — they return
   `fdkey_verification_required` until the connecting agent has solved a
   challenge.
 - Talks to `https://api.fdkey.com` for challenge issuance and scoring.
 - Verifies the Ed25519 JWT response **offline** using the public key
   from `https://api.fdkey.com/.well-known/fdkey.json`.
+
+**The SDK is puzzle-agnostic.** All agent-facing prose (puzzle text,
+per-type instructions, wire-format examples, timing framing) is rendered
+server-side by the VPS and passed through verbatim as the
+`fdkey_get_challenge` tool result (via the VPS's `mcp_response_text`
+field). Adding a new puzzle type or changing an answer format is a
+VPS-only concern — no SDK release needed.
 
 ## Install
 

@@ -2,7 +2,26 @@
 
 > **Purpose.** Python port of the TypeScript SDK at `@fdkey/mcp`. Same wire format, same JWT, same per-session policy semantics. Wraps `mcp.server.fastmcp.FastMCP` to inject the two FDKEY tools and gate `protect`-listed tool calls behind a verification challenge.
 >
-> **Last verified against:** `src/fdkey/` as of 2026-05-09 (initial 0.1.0 release; one shared `httpx.AsyncClient` per VPSClient/WellKnownClient for connection-pool reuse).
+> **Last verified against:** `src/fdkey/` as of 2026-05-11 (0.2.0).
+>
+> **What's new since 0.1.x:**
+> - **0.2.0** — Parity with `@fdkey/mcp` 0.3.1 (TypeScript). SDK is now
+>   puzzle-agnostic; all agent-facing prose lives on the VPS. Two parallel
+>   changes:
+>   - `mcp_response_text` passthrough on the challenge response: when the
+>     VPS supplies the field (sent for `client_type='mcp'`),
+>     `fdkey_get_challenge` returns it verbatim as the tool result. The
+>     `inline_challenge` path uses the same renderer. Falls back to a
+>     JSON dict (header + puzzles + example_submission + footer) when the
+>     VPS doesn't supply the field.
+>   - Stable MCP tool annotations: both injected tools register with
+>     `ToolAnnotations(title, readOnlyHint=False, destructiveHint=False,
+>     idempotentHint=False, openWorldHint=True)`. Passed via FastMCP's
+>     `add_tool(..., annotations=...)` keyword (with transparent fallback
+>     for older `mcp` versions lacking the keyword).
+>
+> Prior baseline (0.1.x): initial release; one shared `httpx.AsyncClient`
+> per VPSClient/WellKnownClient for connection-pool reuse.
 >
 > **Companion docs.**
 > - [../typescript/ARCHITECTURE.md](../typescript/ARCHITECTURE.md) — `@fdkey/mcp`, the language-of-record SDK whose wire shape this port mirrors.
@@ -82,7 +101,7 @@ mcp-integration/sdks/python/
 │  ├─ test_guard.py      — Pure-function tests. Mirrors guard.test in TS.
 │  └─ test_jwt_verify.py — Verify a known-good JWT, reject unknown kid.
 │                            Uses respx to mock httpx.
-├─ pyproject.toml        — name=fdkey, version=0.1.0. Build: hatchling.
+├─ pyproject.toml        — name=fdkey, version=0.2.0. Build: hatchling.
 │                            Deps: mcp, httpx, pyjwt[crypto], cryptography.
 │                            Dev deps: pytest, pytest-asyncio, respx.
 ├─ LICENSE               — MIT.
@@ -103,11 +122,20 @@ mcp-integration/sdks/python/
 **Internals.**
 - `_FDKEY_ATTR = "_fdkey_state"` — sentinel attribute on the FastMCP server holding the per-server `_FdkeyState` bundle.
 - `_active_session_id: ContextVar[Optional[str]]` — the seam for HTTP-Streamable session correlation when FastMCP's API exposes it. Today: `None` → falls through to `'stdio'` for everyone.
-- `_register_fdkey_tools(server, state)` — best-effort registration: tries `server.add_tool` first, falls back to `server.tool` decorator. Errors loudly if neither exists.
+- `_register_fdkey_tools(server, state)` — best-effort registration: tries `server.add_tool` first, falls back to `server.tool` decorator. Errors loudly if neither exists. Passes `annotations=ToolAnnotations(...)` for trust-hint compatibility with newer MCP clients; transparently falls back to no-annotations registration on older `mcp` package versions that lack the keyword (caught via `TypeError`). Annotation values (`_GET_CHALLENGE_ANNOTATIONS`, `_SUBMIT_CHALLENGE_ANNOTATIONS`) are stable across puzzle types / timing config.
 - `_wrap_tool_registrar(server, state)` — monkey-patches BOTH `add_tool` and `tool` on the server. Future tools registered with names in `state.protect` get wrapped via `_wrap_handler`.
 - `_wrap_handler(fn, tool_name, policy, state)` — async wrapper that consults `guard.can_call` before delegating. On guard miss, returns the literal `"fdkey_verification_required..."` string (FastMCP auto-wraps strings into TextContent).
 
-**SDK_VERSION** is hand-maintained at `'0.1.0'` and forwarded to the VPS as `integrator.sdk_version`. Keep in sync with `pyproject.toml [project] version` and `__init__.py __version__`.
+**SDK_VERSION** is hand-maintained at `'0.2.0'` and forwarded to the VPS as `integrator.sdk_version`. Keep in sync with `pyproject.toml [project] version` and `__init__.py __version__`.
+
+**Challenge passthrough.** `_make_get_challenge_handler` returns
+`_challenge_text(challenge)`, which prefers `challenge.mcp_response_text`
+verbatim (the VPS-rendered directive) and falls back to a JSON-stringified
+`_challenge_payload(challenge)` dict otherwise. The fallback dict is
+puzzle-agnostic — it passes `puzzles` and `example_submission` through
+unmodified. The `inline_challenge` blocked-tool error uses the same
+renderer for consistency. No SDK-side puzzle rendering, no per-type
+branches — adding a puzzle type on the VPS doesn't touch this file.
 
 ---
 

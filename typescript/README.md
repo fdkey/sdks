@@ -7,7 +7,9 @@
 ## What it does
 
 - Injects two MCP tools into your server: `fdkey_get_challenge` and
-  `fdkey_submit_challenge`.
+  `fdkey_submit_challenge`, with stable MCP tool annotations
+  (`title`, `readOnlyHint`, `destructiveHint`, `idempotentHint`,
+  `openWorldHint`) for client trust hints.
 - Wraps the tools you want to protect — they return
   `fdkey_verification_required` until the connecting agent has solved a
   challenge.
@@ -19,6 +21,12 @@ The agent never handles a token. The connection itself becomes verified —
 verification state lives server-side in the integrator's process, keyed by
 the MCP session id. Every agent verifies for itself; verification doesn't
 transfer between agents.
+
+**The SDK is puzzle-agnostic.** All agent-facing prose (puzzle text,
+per-type instructions, wire-format examples, timing framing) is rendered
+server-side by the VPS and passed through verbatim as the
+`fdkey_get_challenge` tool result. Adding a new puzzle type or changing
+an answer format is a VPS-only concern — no SDK release needed.
 
 ## Runtime support
 
@@ -115,8 +123,31 @@ withFdkey(server, {
                                               //   so the agent can submit without a separate
                                               //   `fdkey_get_challenge` round-trip
   tags?: { env: 'prod', region: 'eu' },       // free-form non-PII labels forwarded to FDKEY for analytics
+  sessionStore?: SessionStore,                // override the in-memory session map (see below)
 });
 ```
+
+### Persistent sessions on Cloudflare Workers / Durable Objects
+
+The default `sessionStore` is an in-memory `Map`, which is fine for stdio,
+Node servers, and single-process HTTP integrations. On Cloudflare Workers
+the `McpAgent` lives inside a Durable Object that **hibernates after a few
+seconds of idle**; on resume, the in-memory map is gone, which silently
+breaks `fdkey_get_challenge` → `fdkey_submit_challenge` if the agent
+pauses too long between calls.
+
+Pass a `SessionStore` implementation backed by `ctx.storage.sql` so
+verification state survives hibernation. The SDK exposes the
+`SessionStore` interface, the `SessionState` type, and a `newSession()`
+factory so integrators can wire one up without duplicating the field
+defaults. See the `mcp-cloudflare` demo in the FDKEY monorepo for a
+reference implementation (~50 LOC, uses a Proxy on the returned state to
+flush each property write to SQLite).
+
+The SDK mutates session state via top-level assignments only — a single
+`set` trap on the returned Proxy is sufficient to catch every mutation.
+This contract is documented on the `SessionStore` interface and enforced
+by an SDK test.
 
 ### Failure-mode defaults
 

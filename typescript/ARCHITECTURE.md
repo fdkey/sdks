@@ -7,7 +7,31 @@
 > - [../../../vps/ARCHITECTURE.md](../../../vps/ARCHITECTURE.md) — VPS scoring server's wire-format counterpart.
 > - [`../../../FDKEY_IMPLEMENTATION_MASTER.md`](../../../FDKEY_IMPLEMENTATION_MASTER.md) — top-level vision and locked decisions.
 >
-> **Last verified against:** `src/` as of 2026-05-09 (post 0.2.0 — Workers/Bun/Deno compat via lazy-loaded multi-VPS router; default routing path uses global `fetch`, undici moved to `optionalDependencies`; `FdkeyContext.score` and `.tier` promoted to first-class fields for forward-compat capability scoring; post Step 2A.5 — agent info + MCP-Session-Id capture, including `clientInfo.title`, `client_capabilities`, `protocol_version`, `server_info`, `sdk_version`, integrator-supplied `tags`; post IP-pin routing — `VpsEndpoint.ip` instead of `host`, undici dispatcher with custom `lookup` for per-call IP pinning, SNI=`api.fdkey.com` for cert validation across the fleet).
+> **Last verified against:** `src/` as of 2026-05-11 (0.3.1).
+>
+> **What's new since 0.2.0** (the previous reference baseline):
+> - **0.2.9** — `FdkeyConfig.sessionStore` is now pluggable. Integrators on
+>   Cloudflare Workers / Durable Objects MUST pass a persistent backing
+>   (e.g. `ctx.storage.sql`-backed) — the default in-memory `Map` doesn't
+>   survive DO hibernation. The SDK exposes `SessionStore`, `SessionState`,
+>   and `newSession()` for integrators to wire one up.
+> - **0.3.0** — SDK is now **puzzle-agnostic**. The `fdkey_submit_challenge`
+>   inputSchema is opaque (`Record<string, unknown>`); per-type Zod sub-
+>   schemas removed. The VPS now renders a full directive into a
+>   `mcp_response_text` field on the challenge response, and the SDK
+>   returns it verbatim as the tool result — no SDK-side puzzle rendering,
+>   no specific time numbers in any agent-facing string.
+> - **0.3.1** — Both injected tools carry stable MCP `annotations`
+>   (`title`, `readOnlyHint: false`, `destructiveHint: false`,
+>   `idempotentHint: false`, `openWorldHint: true`). Values are
+>   puzzle-agnostic and timing-agnostic — adding a puzzle type or
+>   tweaking TTL on the VPS does NOT change them.
+>
+> Prior baseline (post 0.2.0): Workers/Bun/Deno compat via lazy-loaded
+> multi-VPS router; default routing path uses global `fetch`, undici moved
+> to `optionalDependencies`; `FdkeyContext.score` and `.tier` promoted to
+> first-class fields; agent info + MCP-Session-Id capture; IP-pinned
+> routing via `VpsEndpoint.ip` + per-call dispatcher + SNI=`api.fdkey.com`.
 
 ---
 
@@ -168,7 +192,7 @@ mcp-integration/sdks/typescript/
 - Re-exports: `FdkeyConfig`, `Policy`, `AgentMeta`, `IntegratorMeta`, `ChallengeMeta` (types).
 
 **Internal constants.**
-- `SDK_VERSION = '0.2.0'` — hardcoded; **must stay in sync with `package.json` version**. Forwarded to the VPS as `integrator.sdk_version` for cross-version debugging.
+- `SDK_VERSION = '0.3.1'` — hardcoded; **must stay in sync with `package.json` version** (an `index.test.ts` smoke test asserts equality). Forwarded to the VPS as `integrator.sdk_version` for cross-version debugging.
 - `GET_CHALLENGE_TOOL = 'fdkey_get_challenge'`, `SUBMIT_CHALLENGE_TOOL = 'fdkey_submit_challenge'` — tool names exposed to agents.
 - `GET_CHALLENGE_DESC` / `SUBMIT_CHALLENGE_DESC` — tool descriptions agents read.
 
@@ -440,8 +464,19 @@ Two extra tools always visible on a wrapped server:
 
 ```
 fdkey_get_challenge          (no args)
-fdkey_submit_challenge       (args: { answers: { type1: [...], type3: {...} } })
+fdkey_submit_challenge       (args: { answers: Record<string, unknown> })
 ```
+
+The `answers` schema is **opaque on purpose** — the SDK is puzzle-
+agnostic; the literal wire shape comes from the challenge response itself
+(`example_submission.tool_call_arguments`) and the VPS-rendered directive
+in `mcp_response_text`. Adding a puzzle type or changing an answer format
+does NOT require an SDK release.
+
+Both tools carry stable MCP `annotations` (`title`, `readOnlyHint: false`,
+`destructiveHint: false`, `idempotentHint: false`, `openWorldHint: true`)
+so MCP clients can categorize them without re-fingerprinting on every
+SDK release.
 
 When a protected tool is called pre-verification, the agent gets a tool **error** (not a tool result):
 ```
@@ -449,7 +484,9 @@ When a protected tool is called pre-verification, the agent gets a tool **error*
  fdkey_submit_challenge with your answers, then retry this tool."
 ```
 
-If `inlineChallenge: true`, the same error embeds the challenge JSON so the agent can skip the `fdkey_get_challenge` round-trip.
+If `inlineChallenge: true`, the same error embeds the VPS-rendered
+directive (the same `mcp_response_text` the `fdkey_get_challenge` tool
+returns) so the agent can skip the round-trip.
 
 ### Wire format the SDK sends to the VPS
 
