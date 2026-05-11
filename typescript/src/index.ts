@@ -29,7 +29,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.2.3';
+const SDK_VERSION = '0.2.4';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -173,6 +173,12 @@ function challengePayload(c: ChallengeResponse) {
     types_served: c.types_served,
     header: c.header,
     puzzles: c.puzzles,
+    // Pass-through the VPS's example_submission so the agent sees the
+    // exact wire shape it must POST. Without this, agents have to
+    // discover the wrapper structure by trial-and-error, which is brutal
+    // on a 60-second timer (confirmed 2026-05-11 — Claude burned its
+    // first challenge entirely on schema discovery).
+    example_submission: c.example_submission,
     footer: c.footer,
   };
 }

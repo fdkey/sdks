@@ -2,6 +2,23 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.2.4 — 2026-05-11
+
+### Added — pass-through `example_submission`
+
+- The VPS now embeds an `example_submission` object in the challenge
+  response (server-side teaching aid showing the exact wire-format
+  wrapper the submit body must use). The SDK was stripping it via the
+  `challengePayload()` whitelist — 0.2.4 passes it through to the
+  agent.
+- Result: agents reading the get_challenge tool result see a literal
+  example with their real challenge_id pre-filled and placeholder
+  letters they replace with real answers. No more trial-and-error
+  schema discovery on the 60-second clock.
+- Update `ChallengeResponse` TypeScript interface (`vps-client.ts`)
+  with the optional `example_submission?` field shape for type-safe
+  consumption.
+
 ## 0.2.3 — 2026-05-11
 
 ### Changed — fdkey_submit_challenge tool surface

@@ -1,6 +1,6 @@
 {
   "name": "@fdkey/mcp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "FDKEY verification middleware for MCP servers — gate AI-agent access behind LLM-only puzzles. Runs on Node 18+, Cloudflare Workers, Bun, and Deno.",
   "type": "module",
   "main": "./dist/index.js",

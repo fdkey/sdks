@@ -9,6 +9,17 @@ export interface ChallengeResponse {
   header?: string;
   puzzles: Record<string, unknown>;
   footer?: string;
+  /** Wire-format teaching aid added by the VPS (2026-05-11+). Shows the
+   *  exact JSON the agent should POST to /v1/submit. Contains a `_note`
+   *  flagging that the placeholder letters must be replaced, and a `body`
+   *  with the literal shape. Optional for older VPS versions. */
+  example_submission?: {
+    _note?: string;
+    body?: {
+      challenge_id?: string;
+      answers?: Record<string, unknown>;
+    };
+  };
 }
 
 export interface SubmitResponse {
