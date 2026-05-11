@@ -8,7 +8,7 @@ Public API:
 from .middleware import get_fdkey_context, with_fdkey
 from .types import FdkeyConfig, FdkeyContext, Policy
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
     "with_fdkey",

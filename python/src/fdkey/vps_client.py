@@ -29,6 +29,18 @@ class ChallengeResponse:
     header: Optional[str]
     puzzles: dict[str, Any]
     footer: Optional[str]
+    # Optional pre-rendered directive text from VPS (2026-05-11+). When
+    # present, MCP handlers should return this verbatim as the tool result
+    # so all agent-facing prose (puzzles, instructions, examples, timing
+    # framing) stays in the VPS — prompt iteration is a VPS-deploy only.
+    # Older VPS responses won't include this; the SDK falls back to the
+    # legacy JSON payload (header + puzzles + footer).
+    mcp_response_text: Optional[str] = None
+    # MCP-shaped example submission (the literal arguments object to pass
+    # to fdkey_submit_challenge). VPS emits this when client_type='mcp'.
+    # Shape: {_note, tool_call_arguments: {answers: ...}}. Opaque to the
+    # SDK — surfaced to the agent via mcp_response_text already.
+    example_submission: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -81,6 +93,8 @@ class VpsClient:
             header=payload.get("header"),
             puzzles=payload.get("puzzles", {}),
             footer=payload.get("footer"),
+            mcp_response_text=payload.get("mcp_response_text"),
+            example_submission=payload.get("example_submission"),
         )
 
     async def submit_answers(

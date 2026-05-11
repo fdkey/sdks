@@ -36,6 +36,8 @@ import weakref
 from contextvars import ContextVar
 from typing import Any, Callable, Optional, Union
 
+from mcp.types import ToolAnnotations
+
 from .guard import (
     can_call,
     consume_policy,
@@ -67,7 +69,7 @@ except ImportError:
         _mcp_request_ctx = None
 
 
-SDK_VERSION = "0.1.1"
+SDK_VERSION = "0.2.0"
 DEFAULT_VPS_URL = "https://api.fdkey.com"
 
 GET_CHALLENGE_TOOL = "fdkey_get_challenge"
@@ -82,6 +84,34 @@ SUBMIT_CHALLENGE_DESC = (
     "Submit answers to the active FDKEY challenge. On verified=true, retry "
     "the tool that was blocked. On verified=false, call fdkey_get_challenge "
     "to try again."
+)
+
+# Stable MCP tool annotations — kept invariant across puzzle types, answer
+# formats, and timing config. Values describe what the tools DO at the
+# protocol level, not what they serve. Clients (e.g. Claude Desktop) hash
+# the tool surface for trust caching; stable annotations mean a puzzle
+# change on the VPS doesn't churn the client-side trust fingerprint.
+#
+# Mirrors @fdkey/mcp 0.3.1 (TypeScript SDK).
+#   readOnlyHint: False      — both tools modify server-side state
+#                              (a session row / submission row on the VPS)
+#   destructiveHint: False   — neither tool deletes/overwrites data
+#   idempotentHint: False    — each get returns fresh puzzle; each submit
+#                              is scored independently
+#   openWorldHint: True      — both talk to the FDKEY VPS (external service)
+_GET_CHALLENGE_ANNOTATIONS = ToolAnnotations(
+    title="FDKEY: Get Verification Challenge",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
+)
+_SUBMIT_CHALLENGE_ANNOTATIONS = ToolAnnotations(
+    title="FDKEY: Submit Verification Answers",
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=True,
 )
 
 
@@ -338,28 +368,73 @@ def _read_server_info(server: Any) -> tuple[Optional[str], Optional[str]]:
 
 def _register_fdkey_tools(server: Any, state: _FdkeyState) -> None:
     """Add the two FDKEY tools to the server. Uses whichever registration
-    path FastMCP currently exposes (`add_tool` or `tool` decorator)."""
+    path FastMCP currently exposes (`add_tool` or `tool` decorator).
+
+    Annotations are passed only when the underlying API accepts them — older
+    FastMCP releases lack the `annotations` keyword on `add_tool` / `tool`,
+    so we try with-annotations first and fall back silently. This keeps the
+    SDK compatible with `mcp>=1.0.0` while opportunistically surfacing trust
+    hints on newer runtimes that support them."""
+
+    def _try(fn: Callable[..., Any], with_annotations: dict[str, Any], without: dict[str, Any]) -> None:
+        try:
+            fn(**with_annotations)
+        except TypeError:
+            # Older FastMCP — no `annotations` keyword. Retry without.
+            fn(**without)
+
     add_tool = getattr(server, "add_tool", None)
     if callable(add_tool):
-        add_tool(
-            _make_get_challenge_handler(state),
-            name=GET_CHALLENGE_TOOL,
-            description=GET_CHALLENGE_DESC,
+        _try(
+            add_tool,
+            with_annotations={
+                "fn": _make_get_challenge_handler(state),
+                "name": GET_CHALLENGE_TOOL,
+                "description": GET_CHALLENGE_DESC,
+                "annotations": _GET_CHALLENGE_ANNOTATIONS,
+            },
+            without={
+                "fn": _make_get_challenge_handler(state),
+                "name": GET_CHALLENGE_TOOL,
+                "description": GET_CHALLENGE_DESC,
+            },
         )
-        add_tool(
-            _make_submit_handler(state),
-            name=SUBMIT_CHALLENGE_TOOL,
-            description=SUBMIT_CHALLENGE_DESC,
+        _try(
+            add_tool,
+            with_annotations={
+                "fn": _make_submit_handler(state),
+                "name": SUBMIT_CHALLENGE_TOOL,
+                "description": SUBMIT_CHALLENGE_DESC,
+                "annotations": _SUBMIT_CHALLENGE_ANNOTATIONS,
+            },
+            without={
+                "fn": _make_submit_handler(state),
+                "name": SUBMIT_CHALLENGE_TOOL,
+                "description": SUBMIT_CHALLENGE_DESC,
+            },
         )
         return
+
     tool = getattr(server, "tool", None)
     if callable(tool):
-        tool(name=GET_CHALLENGE_TOOL, description=GET_CHALLENGE_DESC)(
-            _make_get_challenge_handler(state)
-        )
-        tool(name=SUBMIT_CHALLENGE_TOOL, description=SUBMIT_CHALLENGE_DESC)(
-            _make_submit_handler(state)
-        )
+        try:
+            tool(
+                name=GET_CHALLENGE_TOOL,
+                description=GET_CHALLENGE_DESC,
+                annotations=_GET_CHALLENGE_ANNOTATIONS,
+            )(_make_get_challenge_handler(state))
+            tool(
+                name=SUBMIT_CHALLENGE_TOOL,
+                description=SUBMIT_CHALLENGE_DESC,
+                annotations=_SUBMIT_CHALLENGE_ANNOTATIONS,
+            )(_make_submit_handler(state))
+        except TypeError:
+            tool(name=GET_CHALLENGE_TOOL, description=GET_CHALLENGE_DESC)(
+                _make_get_challenge_handler(state)
+            )
+            tool(name=SUBMIT_CHALLENGE_TOOL, description=SUBMIT_CHALLENGE_DESC)(
+                _make_submit_handler(state)
+            )
         return
     raise RuntimeError(
         "fdkey: server has neither add_tool nor tool — is this a FastMCP server?"
@@ -427,7 +502,7 @@ def _wrap_handler(
                 return _result_text(
                     "fdkey_verification_required. Solve the challenge below then "
                     f"call {SUBMIT_CHALLENGE_TOOL} with your answers, then retry "
-                    "this tool.\n" + json.dumps(_challenge_payload(challenge))
+                    "this tool.\n\n" + _challenge_text(challenge)
                 )
             except Exception:
                 if state.on_vps_error == "allow":
@@ -453,7 +528,7 @@ def _make_get_challenge_handler(state: _FdkeyState) -> Callable[..., Any]:
         try:
             challenge = await state.vps_client.fetch_challenge(_meta_for(state))
             session.pending_challenge_id = challenge.challenge_id
-            return _result_text(json.dumps(_challenge_payload(challenge)))
+            return _result_text(_challenge_text(challenge))
         except Exception as err:
             return _error_text(f"fdkey_service_unavailable: {err}")
 
@@ -576,6 +651,9 @@ def _meta_for(state: _FdkeyState) -> dict[str, Any]:
 
 
 def _challenge_payload(c: Any) -> dict[str, Any]:
+    """Fallback dict-shaped payload — used when the VPS doesn't supply a
+    pre-rendered directive (`mcp_response_text`). Stays puzzle-agnostic:
+    `puzzles` and `example_submission` are pass-through opaque blobs."""
     return {
         "expires_in_seconds": c.expires_in_seconds
         or _expires_in_seconds(c.expires_at),
@@ -583,8 +661,25 @@ def _challenge_payload(c: Any) -> dict[str, Any]:
         "types_served": c.types_served,
         "header": c.header,
         "puzzles": c.puzzles,
+        "example_submission": c.example_submission,
         "footer": c.footer,
     }
+
+
+def _challenge_text(c: Any) -> str:
+    """Return the agent-facing text for a challenge response.
+
+    Canonical path: pass through the VPS-rendered `mcp_response_text`
+    verbatim. This keeps all agent-facing prose (puzzles, instructions,
+    examples, timing framing) in the VPS — prompt iteration is a VPS-
+    deploy only, no SDK release.
+
+    Fallback (legacy VPS without `mcp_response_text`): JSON-stringify the
+    `_challenge_payload` dict. The agent still sees everything (puzzles,
+    example_submission, header, footer) but in a less readable shape."""
+    if c.mcp_response_text:
+        return c.mcp_response_text
+    return json.dumps(_challenge_payload(c))
 
 
 def _expires_in_seconds(expires_at_iso: str) -> int:
