@@ -2,6 +2,34 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.2.5 — 2026-05-11
+
+### Changed — agent-facing copy to teach the 60s timing constraint
+
+The challenge TTL is a deliberate 60s (not a bug) — speed of reasoning
+is part of what the gate measures. Chatty MCP clients that interleave
+puzzle-analysis prose between tool calls burn the budget on rendering
+text, not thinking. The 2026-05-11 Claude test surfaced this: even
+with the wire format fixed (0.2.3, 0.2.4), agents still failed on
+attempts where they explained their reasoning to the user between
+`get` and `submit`. This release teaches the agent the constraint
+inside the tool definitions themselves.
+
+- **`fdkey_get_challenge` description** now leads with an
+  IMPORTANT TIMING block: ~60-second TTL, prose between calls counts
+  against it, solve SILENTLY and submit immediately.
+- **`fdkey_submit_challenge` description** references the
+  `example_submission` field in the get_challenge response so the
+  agent knows where to copy the wire shape from.
+- **`no_active_challenge` error message** rewritten to acknowledge
+  the two real causes — never-called vs already-expired — and to
+  spell out "solve silently next time" as the fix. Previous wording
+  said only "Call fdkey_get_challenge first" which was misleading
+  for the expiry case (Claude misdiagnosed it as a different bug
+  and spent investigation cycles on it).
+
+No code-flow changes. Pure copy improvements + version bump.
+
 ## 0.2.4 — 2026-05-11
 
 ### Added — pass-through `example_submission`

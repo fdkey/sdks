@@ -29,7 +29,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.2.4';
+const SDK_VERSION = '0.2.5';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -144,12 +144,19 @@ const GET_CHALLENGE_TOOL = 'fdkey_get_challenge';
 const SUBMIT_CHALLENGE_TOOL = 'fdkey_submit_challenge';
 
 const GET_CHALLENGE_DESC =
-  'Request an AI identity verification challenge. Call this when a tool returns fdkey_verification_required, when asked to verify, or to verify proactively. There is a time limit on your answers.';
+  'Request an AI identity verification challenge. Call this when a tool returns ' +
+  'fdkey_verification_required, when asked to verify, or to verify proactively. ' +
+  '**IMPORTANT TIMING:** the challenge has a strict ~60-second TTL that starts at issue time. ' +
+  'Prose you generate between this call and fdkey_submit_challenge counts against that ' +
+  'budget. To pass reliably: read the puzzles and the example_submission in the response, ' +
+  'solve SILENTLY (no analysis prose to the user), and call fdkey_submit_challenge in your ' +
+  'next tool call. Write any explanation AFTER you have the verdict.';
 
 const SUBMIT_CHALLENGE_DESC =
   'Submit answers to the active FDKEY challenge. The `answers` object groups submissions per puzzle type. ' +
   'For a typical challenge served with type1+type3, the body looks like: ' +
   '{"type1":[{"n":1,"answer":"B"},{"n":2,"answer":"A"},{"n":3,"answer":"C"}],"type3":{"n":1,"answer":"F > A > B > G > C"}}. ' +
+  'The `example_submission` field in the get_challenge response shows this exact shape with your real challenge_id. ' +
   'Use the EXACT letters from each puzzle\'s options. ' +
   'On verified:true, retry the tool that was blocked. On verified:false, call fdkey_get_challenge to try again.';
 
@@ -478,10 +485,25 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
     async (args, extra) => {
       const session = getSession((extra as { sessionId?: string }).sessionId ?? 'stdio');
       if (!session.pendingChallengeId) {
+        // Two real causes for this state:
+        //  (a) the agent submitted before calling fdkey_get_challenge.
+        //  (b) the agent's prose generation between get and submit
+        //      exceeded the ~60s TTL, the SDK already submitted (or
+        //      cleared state) on a previous failed attempt, and this
+        //      is the second-attempt no-op.
+        // Either way the recovery is the same — fetch a fresh
+        // challenge — but the message has to make (b) discoverable
+        // so the agent learns to solve silently next time.
         return mkResult({
           verified: false,
           error: 'no_active_challenge',
-          message: `No active challenge. Call ${GET_CHALLENGE_TOOL} first.`,
+          message:
+            `No active challenge in this session. Either ${GET_CHALLENGE_TOOL} ` +
+            `was never called, OR a previous challenge already expired (TTL is ~60s, ` +
+            `including any prose you generate between tool calls). ` +
+            `Call ${GET_CHALLENGE_TOOL} to start a fresh one, then submit ` +
+            `IMMEDIATELY without writing analysis prose in between — the clock ` +
+            `is running.`,
         });
       }
 
