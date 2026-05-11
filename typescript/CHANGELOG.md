@@ -2,6 +2,33 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.2.7 — 2026-05-11
+
+### Changed — tighter, fewer words; point at internal thinking
+
+2026-05-11 Claude Desktop retest after 0.2.6: format issue gone (3/3
+on retry attempts), but 3/4 first-contact challenges expired. Cause
+revealed by Claude's transcript: ~600 tokens of visible reasoning
+between get and submit ("A. believe — 'The company believes' — animate
+works…"). The model was externalizing its chain-of-thought as visible
+chat text, which at ~50-80 tok/s burns 8-15s of the 60s budget before
+submit is even queued. The previous HEADER said "solve silently" but
+the model treats visible reasoning as *its work*, not narration.
+
+- **`fdkey_get_challenge` description** trimmed and reframed: explicit
+  "VERY NEXT action must be submit", "reason internally (extended
+  thinking if available), not in chat". Less prose for the agent to
+  parse before calling.
+- **`fdkey_submit_challenge` description** leads with "VERY NEXT tool
+  call after get with NO intervening visible text". Wire-format detail
+  preserved (still needed for the double-wrap fix from 0.2.6).
+- **Companion VPS change (same day)** — challenge HEADER shortened
+  from ~95 words to ~50 and rewritten to name the failure mode: every
+  token of visible analysis delays submit; reason in internal/extended
+  thinking, not chat.
+
+No SDK code-flow changes. Pure copy improvements + version bump.
+
 ## 0.2.6 — 2026-05-11
 
 ### Fixed — double-wrapped submit body from MCP agents

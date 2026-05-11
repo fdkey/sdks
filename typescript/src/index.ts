@@ -29,7 +29,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.2.6';
+const SDK_VERSION = '0.2.7';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -144,22 +144,22 @@ const GET_CHALLENGE_TOOL = 'fdkey_get_challenge';
 const SUBMIT_CHALLENGE_TOOL = 'fdkey_submit_challenge';
 
 const GET_CHALLENGE_DESC =
-  'Request an AI identity verification challenge. Call this when a tool returns ' +
+  'Request an AI identity verification challenge. Call when a tool returns ' +
   'fdkey_verification_required, when asked to verify, or to verify proactively. ' +
-  '**IMPORTANT TIMING:** the challenge has a strict ~60-second TTL that starts at issue time. ' +
-  'Prose you generate between this call and fdkey_submit_challenge counts against that ' +
-  'budget. To pass reliably: read the puzzles and the example_submission in the response, ' +
-  'solve SILENTLY (no analysis prose to the user), and call fdkey_submit_challenge in your ' +
-  'next tool call. Write any explanation AFTER you have the verdict.';
+  '**60s timer starts on return.** Your VERY NEXT action after this must be a ' +
+  'fdkey_submit_challenge tool call with NO intervening visible text. Reason ' +
+  'internally (extended thinking if available), not in chat — visible prose burns ' +
+  'the budget. Explanations come AFTER the verdict.';
 
 const SUBMIT_CHALLENGE_DESC =
-  'Submit answers to the active FDKEY challenge. This tool takes ONE argument named `answers` — its value is an object grouped per puzzle type. ' +
+  'Submit answers to the active FDKEY challenge. **Should be your VERY NEXT tool call after fdkey_get_challenge with NO intervening visible text** (the challenge has a 60s TTL). ' +
+  'Takes ONE argument named `answers` — an object grouped per puzzle type. ' +
   'Do NOT pass challenge_id; the SDK injects it from session state. ' +
-  'For a typical challenge served with type1+type3, the tool call looks like: ' +
+  'For a typical type1+type3 challenge: ' +
   'fdkey_submit_challenge({"answers":{"type1":[{"n":1,"answer":"B"},{"n":2,"answer":"A"},{"n":3,"answer":"C"}],"type3":{"n":1,"answer":"F > A > B > G > C"}}}). ' +
-  'The get_challenge response carries an `example_submission.tool_call_arguments` field showing the literal arguments object for your current challenge — copy that, replace placeholder letters with your real answers, and pass it as the tool argument. ' +
+  'The get_challenge response carries `example_submission.tool_call_arguments` — copy that, swap in your real answers, pass it as the tool argument. ' +
   'Use the EXACT letters from each puzzle\'s options. ' +
-  'On verified:true, retry the tool that was blocked. On verified:false, call fdkey_get_challenge to try again.';
+  'On verified:true, retry the blocked tool. On verified:false, call fdkey_get_challenge to retry.';
 
 function mkError(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true as const };
