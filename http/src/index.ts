@@ -41,6 +41,15 @@ import {
 import { InMemorySessionStore } from './session-store.js';
 import { JwtVerifier } from './jwt-verify.js';
 import { normalisePolicy, sessionStillValid, type Policy } from './policy.js';
+import {
+  DEFAULT_TICKET_TTL_SECONDS,
+  MIN_TICKET_SECRET_BYTES,
+  TicketExpiredError,
+  TicketInvalidError,
+  secretToBytes,
+  signTicket,
+  verifyTicket,
+} from './ticket.js';
 import { VpsClient, VpsHttpError } from './vps-client.js';
 import { WellKnownClient } from './well-known.js';
 
@@ -94,6 +103,11 @@ interface FdkeyCore {
      *  Either an absolute URL (when `publicBaseUrl` is set) or a relative
      *  path (the default — works when SDK is mounted at root). */
     submitUrl: string;
+    /** HMAC secret as bytes — pre-encoded once at startup so the hot
+     *  path doesn't re-encode on every sign/verify. */
+    ticketSecretBytes: Uint8Array;
+    /** Resolved ticket lifetime (defaults to DEFAULT_TICKET_TTL_SECONDS). */
+    ticketTtlSeconds: number;
   };
   sessionStore: SessionStore;
   vps: VpsClient;
@@ -150,6 +164,31 @@ function validateConfig(config: FdkeyHttpConfig): void {
       );
     }
   }
+  if (
+    typeof config.ticketSecret !== 'string' ||
+    config.ticketSecret.length === 0
+  ) {
+    throw new Error(
+      '@fdkey/http: `ticketSecret` is required. Generate one with ' +
+        '`openssl rand -base64 48` and store it as a secret (env var, ' +
+        'Wrangler secret, etc.) — never expose it to the agent.',
+    );
+  }
+  if (secretToBytes(config.ticketSecret).length < MIN_TICKET_SECRET_BYTES) {
+    throw new Error(
+      `@fdkey/http: \`ticketSecret\` must be at least ${MIN_TICKET_SECRET_BYTES} ` +
+        `bytes (HS256 minimum). Generate a fresh one with ` +
+        '`openssl rand -base64 48`.',
+    );
+  }
+  if (
+    config.ticketTtlSeconds !== undefined &&
+    (!Number.isFinite(config.ticketTtlSeconds) || config.ticketTtlSeconds <= 0)
+  ) {
+    throw new Error(
+      '@fdkey/http: `ticketTtlSeconds` must be a positive number.',
+    );
+  }
 }
 
 function resolveSubmitUrl(config: FdkeyHttpConfig, submitPath: string): string {
@@ -180,6 +219,9 @@ function buildCore(config: FdkeyHttpConfig): FdkeyCore {
       tags: config.tags,
       policy: normalisePolicy(config.policy),
       submitUrl: resolveSubmitUrl(config, submitPath),
+      ticketSecretBytes: secretToBytes(config.ticketSecret),
+      ticketTtlSeconds:
+        config.ticketTtlSeconds ?? DEFAULT_TICKET_TTL_SECONDS,
     },
     sessionStore: config.sessionStore ?? new InMemorySessionStore(),
     vps: new VpsClient({
@@ -320,19 +362,114 @@ async function blockWithChallenge(
       },
     };
   }
-  const body = core.vps.buildChallengeRequiredResponse(
+  const baseBody = core.vps.buildChallengeRequiredResponse(
     challenge,
     reason,
     core.config.submitUrl,
+  );
+  // Issue a short-lived ticket bound to `sid`. The agent presents it on
+  // /fdkey/challenge and /fdkey/submit; without it, those endpoints return
+  // 401. This is what prevents random scripts from hammering the challenge
+  // endpoint without ever interacting with a protected route.
+  const challenge_ticket = await signTicket(
+    core.config.ticketSecretBytes,
+    sid,
+    core.config.ticketTtlSeconds,
   );
   return {
     outcome: 'block',
     response: {
       status: 402,
-      body,
+      body: { ...baseBody, challenge_ticket },
       headers: maybeAttach(core, sid, mintedNew),
     },
   };
+}
+
+/** Extract a Bearer token from an Authorization header (RFC 6750), or
+ *  null if missing/malformed. Used by /fdkey/challenge and /fdkey/submit
+ *  to read the agent's ticket. */
+function extractBearerTicket(headers: HeadersInput): string | null {
+  let auth: string | null = null;
+  if (typeof (headers as { get?: unknown }).get === 'function') {
+    auth = (headers as { get(name: string): string | null }).get('authorization');
+  } else {
+    const h = headers as Record<string, string | string[] | undefined>;
+    const raw = h['authorization'] ?? h['Authorization'];
+    if (typeof raw === 'string') auth = raw;
+    else if (Array.isArray(raw) && raw.length > 0) auth = raw[0];
+  }
+  if (!auth) return null;
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1].trim() : null;
+}
+
+/** Check that the request carries a valid ticket. Returns the bound sid
+ *  on success, or an `AbstractResponse` (401) the caller should return
+ *  verbatim. Used by /fdkey/challenge and /fdkey/submit. */
+async function requireValidTicket(
+  core: FdkeyCore,
+  headers: HeadersInput,
+): Promise<{ ok: true; sid: string } | { ok: false; response: AbstractResponse }> {
+  const token = extractBearerTicket(headers);
+  if (!token) {
+    return {
+      ok: false,
+      response: {
+        status: 401,
+        body: {
+          error: 'fdkey_ticket_required',
+          message:
+            'This endpoint requires a Bearer ticket. Hit a protected route ' +
+            'first to receive a 402 with `challenge_ticket`, then present it ' +
+            'as `Authorization: Bearer <ticket>` here.',
+        },
+      },
+    };
+  }
+  try {
+    const { sid } = await verifyTicket(core.config.ticketSecretBytes, token);
+    return { ok: true, sid };
+  } catch (err) {
+    if (err instanceof TicketExpiredError) {
+      return {
+        ok: false,
+        response: {
+          status: 401,
+          body: {
+            error: err.code,
+            message:
+              'Ticket expired. Hit a protected route again to receive a fresh one.',
+          },
+        },
+      };
+    }
+    if (err instanceof TicketInvalidError) {
+      return {
+        ok: false,
+        response: {
+          status: 401,
+          body: {
+            error: err.code,
+            message:
+              'Ticket invalid (bad signature or malformed). Hit a protected ' +
+              'route to receive a fresh one.',
+          },
+        },
+      };
+    }
+    // Unknown error during verify — surface as invalid rather than 500.
+    return {
+      ok: false,
+      response: {
+        status: 401,
+        body: {
+          error: 'fdkey_ticket_invalid',
+          message: 'Ticket verification failed.',
+        },
+      },
+    };
+  }
 }
 
 function maybeAttach(
@@ -386,6 +523,8 @@ async function processSubmit(
       body: { error: 'invalid_body', message: 'expected { challenge_id: string, answers: object }' },
     };
   }
+  const ticketCheck = await requireValidTicket(core, headers);
+  if (!ticketCheck.ok) return ticketCheck.response;
   const r = resolveSessionId(
     core.config.sessionStrategy,
     core.config.cookieName,
@@ -399,6 +538,22 @@ async function processSubmit(
   }
   const sid = r.sid;
   const minted = r.kind === 'minted';
+  // The ticket was issued bound to a specific sid (set when blockWithChallenge
+  // minted the 402). The agent now presents the cookie/header sid alongside
+  // the ticket — they MUST match, or the agent is replaying a ticket from a
+  // different session.
+  if (ticketCheck.sid !== sid) {
+    return {
+      status: 401,
+      body: {
+        error: 'fdkey_ticket_session_mismatch',
+        message:
+          'Ticket was issued for a different session than the cookie/header ' +
+          'identifies. Re-trigger the protected route to receive a matching ' +
+          'session + ticket pair.',
+      },
+    };
+  }
 
   let vpsRes: Awaited<ReturnType<VpsClient['submitAnswers']>>;
   try {
@@ -529,11 +684,17 @@ async function processSubmit(
   };
 }
 
-/** Optional convenience: GET /fdkey/challenge for integrator-rendered
- *  "register as AI agent" UIs that want a challenge before any protected
- *  route is touched. Returns the clean `ChallengeFetchResponse` shape —
- *  no `error` / `reason` fields (those are 402-specific). */
-async function processChallengeFetch(core: FdkeyCore): Promise<AbstractResponse> {
+/** GET /fdkey/challenge — refresh the challenge for an agent that already
+ *  hit a protected route (and received a 402 with `challenge_ticket`).
+ *  Requires a valid Bearer ticket; without it, returns 401. This gating
+ *  prevents random scripts from hammering the endpoint without ever
+ *  interacting with a protected route. */
+async function processChallengeFetch(
+  core: FdkeyCore,
+  headers: HeadersInput,
+): Promise<AbstractResponse> {
+  const ticketCheck = await requireValidTicket(core, headers);
+  if (!ticketCheck.ok) return ticketCheck.response;
   try {
     const challenge = await core.vps.fetchChallenge();
     return {
@@ -641,7 +802,8 @@ function makeExpress(core: FdkeyCore): ExpressAdapter {
             (req.method === 'GET' || req.method === 'POST') &&
             p === core.config.challengePath
           ) {
-            const out = await processChallengeFetch(core);
+            const out = await processChallengeFetch(core, req.headers);
+            applyHeaders(res, out.headers);
             res.status(out.status).json(out.body);
             return;
           }
@@ -716,8 +878,9 @@ function makeFastify(core: FdkeyCore): FastifyAdapter {
         applyFastifyHeaders(reply, out.headers);
         return reply.status(out.status).send(out.body);
       });
-      app.get(core.config.challengePath, async (_req, reply) => {
-        const out = await processChallengeFetch(core);
+      app.get(core.config.challengePath, async (req, reply) => {
+        const out = await processChallengeFetch(core, req.headers);
+        applyFastifyHeaders(reply, out.headers);
         return reply.status(out.status).send(out.body);
       });
     },
@@ -787,7 +950,8 @@ function makeHono(core: FdkeyCore): HonoAdapter {
         return c.json(out.body as object, out.status);
       });
       app.get(core.config.challengePath, async (c) => {
-        const out = await processChallengeFetch(core);
+        const out = await processChallengeFetch(core, honoHeadersAdapter(c));
+        applyHonoHeaders(c, out.headers);
         return c.json(out.body as object, out.status);
       });
     },

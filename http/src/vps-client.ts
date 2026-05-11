@@ -115,13 +115,15 @@ export class VpsClient {
     };
   }
 
-  /** 402 body — middleware path. Carries `error` + `reason` so callers can
-   *  branch on it; otherwise identical to the GET /fdkey/challenge body. */
+  /** 402 body skeleton — middleware path. Carries `error` + `reason` so
+   *  callers can branch on it; otherwise identical to the GET /fdkey/challenge
+   *  body. The `challenge_ticket` field is added by the caller (index.ts)
+   *  since it's an SDK-side HMAC, not VPS-supplied data. */
   buildChallengeRequiredResponse(
     challenge: VpsChallengeResponse,
     reason: ChallengeReason,
     submitUrl: string,
-  ): ChallengeRequiredResponse {
+  ): Omit<ChallengeRequiredResponse, 'challenge_ticket'> {
     return {
       error: 'fdkey_verification_required',
       reason,

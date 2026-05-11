@@ -13,9 +13,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generateKeyPair, exportSPKI, SignJWT } from 'jose';
 import { createFdkey, InMemorySessionStore, type FdkeyContext, type SubmitResponse } from './index.js';
+import { secretToBytes, signTicket } from './ticket.js';
 
 const VPS_URL = 'https://api.test';
 const KID = 'test-key-1';
+// Shared 48-byte secret for HMAC ticket signing across the test suite.
+// Length exceeds the 32-byte minimum the SDK enforces at startup.
+const TICKET_SECRET = 'test-secret-must-be-at-least-32-bytes-long-zzzzz';
 
 let privateKey: CryptoKey;
 let publicKeyPem: string;
@@ -30,6 +34,14 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+/** Mint a Bearer ticket for `sid`, signed with the test's HMAC secret.
+ *  Returns `{ authorization: 'Bearer <ticket>' }` ready to spread into
+ *  a request `headers` object. Async because HS256 sign is async. */
+async function ticketAuth(sid: string): Promise<{ authorization: string }> {
+  const t = await signTicket(secretToBytes(TICKET_SECRET), sid);
+  return { authorization: `Bearer ${t}` };
+}
 
 async function signJwt(claims: Record<string, unknown> = {}): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
@@ -132,7 +144,7 @@ describe('createFdkey: middleware (no session → 402)', () => {
   it('returns 402 with reason=no_session and Set-Cookie when no cookie present', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const mw = fdkey.express.middleware();
 
     const req = makeReq({ headers: {} });
@@ -159,7 +171,7 @@ describe('createFdkey: middleware (no session → 402)', () => {
   it('uses the integrator API key when fetching the challenge (server-to-server)', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt();
-    const fdkey = createFdkey({ apiKey: 'fdk_secret_xyz', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_secret_xyz', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const mw = fdkey.express.middleware();
     await mw(makeReq(), makeRes().res, vi.fn());
     expect(mock.lastChallengeAuth).toBe('Bearer fdk_secret_xyz');
@@ -170,13 +182,13 @@ describe('createFdkey: /fdkey/submit (full round-trip, agent never sees JWT)', (
   it('verifies a valid submission and returns { verified, score, tier } — no JWT in body', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt({ score: 1.0, tier: 'gold' });
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
 
     const req = makeReq({
       method: 'POST',
       path: '/fdkey/submit',
-      headers: { cookie: 'fdkey_session=test-sid-1' },
+      headers: { cookie: 'fdkey_session=test-sid-1', ...(await ticketAuth('test-sid-1')) },
       body: { challenge_id: 'cid-test-1', answers: { type1: ['B'], type3: { q1: ['a','b','c','d','e'] } } },
     });
     const r = makeRes();
@@ -210,13 +222,13 @@ describe('createFdkey: /fdkey/submit (full round-trip, agent never sees JWT)', (
       .setIssuer('rogue').setAudience('a').setSubject('s')
       .setIssuedAt(now).setExpirationTime(now + 600)
       .sign(otherKp.privateKey as CryptoKey);
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
 
     const req = makeReq({
       method: 'POST',
       path: '/fdkey/submit',
-      headers: { cookie: 'fdkey_session=test-sid-2' },
+      headers: { cookie: 'fdkey_session=test-sid-2', ...(await ticketAuth('test-sid-2')) },
       body: { challenge_id: 'cid-test-1', answers: { type1: ['A'] } },
     });
     const r = makeRes();
@@ -233,12 +245,12 @@ describe('createFdkey: /fdkey/submit (full round-trip, agent never sees JWT)', (
     const mock = installMockVps();
     mock.submitVerified = false;
     mock.submitJwt = null;
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const req = makeReq({
       method: 'POST',
       path: '/fdkey/submit',
-      headers: { cookie: 'fdkey_session=test-sid-3' },
+      headers: { cookie: 'fdkey_session=test-sid-3', ...(await ticketAuth('test-sid-3')) },
       body: { challenge_id: 'cid-test-1', answers: { type1: ['Z'] } },
     });
     const r = makeRes();
@@ -250,7 +262,7 @@ describe('createFdkey: /fdkey/submit (full round-trip, agent never sees JWT)', (
 
   it('rejects malformed bodies with 400', async () => {
     installMockVps();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const req = makeReq({
       method: 'POST',
@@ -268,7 +280,7 @@ describe('createFdkey: middleware (verified session → pass-through)', () => {
   it('attaches req.fdkey and calls next() when the session is verified', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt({ score: 0.75, tier: 'silver' });
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const mw = fdkey.express.middleware();
 
@@ -277,7 +289,7 @@ describe('createFdkey: middleware (verified session → pass-through)', () => {
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { cookie: 'fdkey_session=verified-sid' },
+        headers: { cookie: 'fdkey_session=verified-sid', ...(await ticketAuth('verified-sid')) },
         body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
       }),
       makeRes().res,
@@ -302,7 +314,7 @@ describe('createFdkey: middleware (verified session → pass-through)', () => {
   it('returns 402 with reason=unknown_session when the cookie points at an unknown sid', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const mw = fdkey.express.middleware();
 
     const req = makeReq({ headers: { cookie: 'fdkey_session=ghost-sid' } });
@@ -324,6 +336,7 @@ describe('createFdkey: policy: every_minutes', () => {
     // SDK-side policy check.
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       policy: { type: 'every_minutes', minutes: 5 },
     });
@@ -335,7 +348,7 @@ describe('createFdkey: policy: every_minutes', () => {
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { cookie: 'fdkey_session=ttl-sid' },
+        headers: { cookie: 'fdkey_session=ttl-sid', ...(await ticketAuth('ttl-sid')) },
         body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
       }),
       makeRes().res,
@@ -364,6 +377,7 @@ describe('createFdkey: header sessionStrategy', () => {
     mock.submitJwt = await signJwt();
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       sessionStrategy: 'header',
     });
@@ -374,7 +388,7 @@ describe('createFdkey: header sessionStrategy', () => {
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { 'x-fdkey-session': 'header-sid-1' },
+        headers: { 'x-fdkey-session': 'header-sid-1', ...(await ticketAuth('header-sid-1')) },
         body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
       }),
       makeRes().res,
@@ -396,6 +410,7 @@ describe('createFdkey: integrator-supplied session store', () => {
     const store = new InMemorySessionStore();
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       sessionStore: store,
     });
@@ -405,7 +420,7 @@ describe('createFdkey: integrator-supplied session store', () => {
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { cookie: 'fdkey_session=override-sid' },
+        headers: { cookie: 'fdkey_session=override-sid', ...(await ticketAuth('override-sid')) },
         body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
       }),
       makeRes().res,
@@ -422,7 +437,7 @@ describe('createFdkey: VPS unreachable', () => {
     // Default is 'allow' so an FDKEY outage doesn't brick the integrator's
     // endpoints — middleware passes the request through with no req.fdkey.
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const mw = fdkey.express.middleware();
     const req = makeReq();
     const r = makeRes();
@@ -434,7 +449,7 @@ describe('createFdkey: VPS unreachable', () => {
   it('returns 503 when onVpsError=block (opt-in fail-closed)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
     const fdkey = createFdkey({
-      apiKey: 'fdk_test', vpsUrl: VPS_URL, onVpsError: 'block',
+      apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL, onVpsError: 'block',
     });
     const mw = fdkey.express.middleware();
     const req = makeReq();
@@ -456,7 +471,7 @@ describe('createFdkey: config validation', () => {
 
   it('throws when publicBaseUrl is malformed', () => {
     expect(() =>
-      createFdkey({ apiKey: 'fdk_test', publicBaseUrl: 'not a url' as never }),
+      createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, publicBaseUrl: 'not a url' as never }),
     ).toThrow(/invalid `publicBaseUrl`/i);
   });
 
@@ -464,6 +479,7 @@ describe('createFdkey: config validation', () => {
     expect(() =>
       createFdkey({
         apiKey: 'fdk_test',
+        ticketSecret: TICKET_SECRET,
         vpsUrl: VPS_URL,
         publicBaseUrl: 'https://api.example.com/v1',
       }),
@@ -474,7 +490,7 @@ describe('createFdkey: config validation', () => {
 describe('createFdkey: body validation on /fdkey/submit', () => {
   it('rejects null answers with 400', async () => {
     installMockVps();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const r = makeRes();
     await routes(
@@ -492,7 +508,7 @@ describe('createFdkey: body validation on /fdkey/submit', () => {
 
   it('rejects array answers with 400', async () => {
     installMockVps();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const r = makeRes();
     await routes(
@@ -510,7 +526,7 @@ describe('createFdkey: body validation on /fdkey/submit', () => {
 
   it('rejects empty challenge_id with 400', async () => {
     installMockVps();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const r = makeRes();
     await routes(
@@ -541,14 +557,14 @@ describe('createFdkey: VPS error split (4xx → agent vs integrator)', () => {
       }
       return new Response('not found', { status: 404 });
     }));
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const r = makeRes();
     await routes(
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { cookie: 'fdkey_session=bad-key-sid' },
+        headers: { cookie: 'fdkey_session=bad-key-sid', ...(await ticketAuth('bad-key-sid')) },
         body: { challenge_id: 'cid-1', answers: { type1: ['B'] } },
       }),
       r.res,
@@ -569,14 +585,14 @@ describe('createFdkey: VPS error split (4xx → agent vs integrator)', () => {
       }
       return new Response('not found', { status: 404 });
     }));
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const r = makeRes();
     await routes(
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { cookie: 'fdkey_session=expired-sid' },
+        headers: { cookie: 'fdkey_session=expired-sid', ...(await ticketAuth('expired-sid')) },
         body: { challenge_id: 'cid-1', answers: { type1: ['B'] } },
       }),
       r.res,
@@ -592,11 +608,11 @@ describe('createFdkey: VPS error split (4xx → agent vs integrator)', () => {
 describe('createFdkey: GET /fdkey/challenge', () => {
   it('returns clean ChallengeFetchResponse shape (no error/reason fields)', async () => {
     installMockVps();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const r = makeRes();
     await routes(
-      makeReq({ method: 'GET', path: '/fdkey/challenge', headers: {} }),
+      makeReq({ method: 'GET', path: '/fdkey/challenge', headers: { ...(await ticketAuth('challenge-fetch-sid')) } }),
       r.res,
       vi.fn(),
     );
@@ -613,11 +629,11 @@ describe('createFdkey: GET /fdkey/challenge', () => {
 
   it('returns 503 when VPS is unreachable', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const routes = fdkey.express.routes();
     const r = makeRes();
     await routes(
-      makeReq({ method: 'GET', path: '/fdkey/challenge', headers: {} }),
+      makeReq({ method: 'GET', path: '/fdkey/challenge', headers: { ...(await ticketAuth('challenge-fetch-sid')) } }),
       r.res,
       vi.fn(),
     );
@@ -630,6 +646,7 @@ describe('createFdkey: publicBaseUrl absolute submit_url', () => {
     installMockVps();
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       publicBaseUrl: 'https://api.example.com/v1',
     });
@@ -645,13 +662,14 @@ describe('createFdkey: publicBaseUrl absolute submit_url', () => {
     installMockVps();
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       publicBaseUrl: 'https://api.example.com',
     });
     const routes = fdkey.express.routes();
     const r = makeRes();
     await routes(
-      makeReq({ method: 'GET', path: '/fdkey/challenge', headers: {} }),
+      makeReq({ method: 'GET', path: '/fdkey/challenge', headers: { ...(await ticketAuth('challenge-fetch-sid')) } }),
       r.res,
       vi.fn(),
     );
@@ -663,6 +681,7 @@ describe('createFdkey: publicBaseUrl absolute submit_url', () => {
     installMockVps();
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       publicBaseUrl: 'https://api.example.com/',
     });
@@ -683,6 +702,7 @@ describe('createFdkey: custom session strategy', () => {
     let attachCalledWith: string | null = null;
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       sessionStrategy: {
         extract: (headers) => {
@@ -716,7 +736,7 @@ describe('createFdkey: custom session strategy', () => {
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { 'x-custom-session': 'custom-sid-1' },
+        headers: { 'x-custom-session': 'custom-sid-1', ...(await ticketAuth('custom-sid-1')) },
         body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
       }),
       makeRes().res,
@@ -741,6 +761,7 @@ describe('createFdkey: submit onVpsError=allow', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       onVpsError: 'allow',
     });
@@ -750,7 +771,7 @@ describe('createFdkey: submit onVpsError=allow', () => {
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { cookie: 'fdkey_session=fail-open-sid' },
+        headers: { cookie: 'fdkey_session=fail-open-sid', ...(await ticketAuth('fail-open-sid')) },
         body: { challenge_id: 'cid-1', answers: { type1: ['B'] } },
       }),
       r.res,
@@ -788,6 +809,7 @@ describe('createFdkey: submit onVpsError=allow', () => {
     );
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       onVpsError: 'allow',   // even with allow, 4xx is loud
     });
@@ -797,7 +819,7 @@ describe('createFdkey: submit onVpsError=allow', () => {
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { cookie: 'fdkey_session=four-oh-four-sid' },
+        headers: { cookie: 'fdkey_session=four-oh-four-sid', ...(await ticketAuth('four-oh-four-sid')) },
         body: { challenge_id: 'cid-1', answers: { type1: ['B'] } },
       }),
       r.res,
@@ -819,6 +841,7 @@ describe('createFdkey: header strategy missing-header path', () => {
     installMockVps();
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       sessionStrategy: 'header',
     });
@@ -835,16 +858,20 @@ describe('createFdkey: header strategy missing-header path', () => {
     installMockVps();
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       sessionStrategy: 'header',
     });
     const routes = fdkey.express.routes();
     const r = makeRes();
+    // Send a valid ticket so the request gets PAST the ticket check; the
+    // SDK should then reach the session-id resolve and fail with 400
+    // fdkey_missing_session_id because no X-FDKEY-Session header is set.
     await routes(
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: {},
+        headers: { ...(await ticketAuth('header-missing-sid')) },
         body: { challenge_id: 'cid-1', answers: { type1: ['B'] } },
       }),
       r.res,
@@ -859,6 +886,7 @@ describe('createFdkey: header strategy missing-header path', () => {
     mock.submitJwt = await signJwt();
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       sessionStrategy: 'header',
     });
@@ -869,7 +897,7 @@ describe('createFdkey: header strategy missing-header path', () => {
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { 'x-fdkey-session': 'good-header-sid' },
+        headers: { 'x-fdkey-session': 'good-header-sid', ...(await ticketAuth('good-header-sid')) },
         body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
       }),
       makeRes().res,
@@ -924,7 +952,7 @@ describe('createFdkey: fastify adapter', () => {
   it('registerRoutes wires POST /fdkey/submit and GET /fdkey/challenge', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt({ tier: 'silver' });
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const f = makeFastifyApp();
     fdkey.fastify.registerRoutes(f.app);
     expect(f.routes['POST /fdkey/submit']).toBeDefined();
@@ -933,7 +961,7 @@ describe('createFdkey: fastify adapter', () => {
     const r = makeFastifyReply();
     await f.routes['POST /fdkey/submit'](
       {
-        headers: { cookie: 'fdkey_session=fastify-sid' },
+        headers: { cookie: 'fdkey_session=fastify-sid', ...(await ticketAuth('fastify-sid')) },
         body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
       } as never,
       r.reply,
@@ -948,14 +976,14 @@ describe('createFdkey: fastify adapter', () => {
   it('preHandler attaches request.fdkey on a verified session', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
     const f = makeFastifyApp();
     fdkey.fastify.registerRoutes(f.app);
 
     // Submit first to populate the store.
     await f.routes['POST /fdkey/submit'](
       {
-        headers: { cookie: 'fdkey_session=fastify-mw-sid' },
+        headers: { cookie: 'fdkey_session=fastify-mw-sid', ...(await ticketAuth('fastify-mw-sid')) },
         body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
       } as never,
       makeFastifyReply().reply,
@@ -976,7 +1004,7 @@ describe('createFdkey: fastify adapter', () => {
   it('preHandler emits 402 when no session is verified', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
 
     const req = { headers: {} };
     const reply = makeFastifyReply();
@@ -991,6 +1019,7 @@ describe('createFdkey: cookie value validation', () => {
     expect(() =>
       createFdkey({
         apiKey: 'fdk_test',
+        ticketSecret: TICKET_SECRET,
         vpsUrl: VPS_URL,
         cookieName: 'fdkey_session\r\nSet-Cookie: evil=1',
       }),
@@ -998,6 +1027,7 @@ describe('createFdkey: cookie value validation', () => {
 
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       cookieName: 'fdkey_session\r\nSet-Cookie: evil=1',
     });
@@ -1017,6 +1047,7 @@ describe('createFdkey: cookie value validation', () => {
     // padding — must NOT be rejected as invalid.
     const fdkey = createFdkey({
       apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
       vpsUrl: VPS_URL,
       sessionStrategy: {
         extract: () => 'aGVsbG8gd29ybGQ=', // base64('hello world') with `=` padding
@@ -1105,7 +1136,7 @@ describe('createFdkey: submit with onVpsError=block + 5xx VPS', () => {
       }),
     );
     const fdkey = createFdkey({
-      apiKey: 'fdk_test', vpsUrl: VPS_URL, onVpsError: 'block',
+      apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL, onVpsError: 'block',
     });
     const routes = fdkey.express.routes();
     const r = makeRes();
@@ -1113,7 +1144,7 @@ describe('createFdkey: submit with onVpsError=block + 5xx VPS', () => {
       makeReq({
         method: 'POST',
         path: '/fdkey/submit',
-        headers: { cookie: 'fdkey_session=block-sid' },
+        headers: { cookie: 'fdkey_session=block-sid', ...(await ticketAuth('block-sid')) },
         body: { challenge_id: 'cid-1', answers: { type1: ['B'] } },
       }),
       r.res,
@@ -1131,7 +1162,7 @@ describe('createFdkey: hono adapter', () => {
   it('processSubmit returns { verified, score, tier } via c.json with no JWT', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt({ tier: 'platinum' });
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
 
     let registeredPost: ((c: never) => Promise<Response>) | null = null;
     let registeredGet: ((c: never) => Promise<Response>) | null = null;
@@ -1150,11 +1181,15 @@ describe('createFdkey: hono adapter', () => {
 
     const stored = new Map<string, unknown>();
     const setHeaders: Record<string, string> = {};
+    const honoTicketBearer = `Bearer ${await signTicket(secretToBytes(TICKET_SECRET), 'hono-sid')}`;
     const c = {
       req: {
         method: 'POST',
-        header: (n: string) =>
-          n.toLowerCase() === 'cookie' ? 'fdkey_session=hono-sid' : undefined,
+        header: (n: string) => {
+          if (n.toLowerCase() === 'cookie') return 'fdkey_session=hono-sid';
+          if (n.toLowerCase() === 'authorization') return honoTicketBearer;
+          return undefined;
+        },
         json: async () => ({ challenge_id: 'cid-test-1', answers: { type1: ['B'] } }),
       },
       set: (k: string, v: unknown) => stored.set(k, v),
@@ -1173,7 +1208,7 @@ describe('createFdkey: hono adapter', () => {
   it('middleware passes through when session is verified', async () => {
     const mock = installMockVps();
     mock.submitJwt = await signJwt();
-    const fdkey = createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL });
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
 
     // Pre-populate via the Hono submit handler.
     let registeredPost: ((c: never) => Promise<Response>) | null = null;
@@ -1184,11 +1219,15 @@ describe('createFdkey: hono adapter', () => {
       },
       get: () => undefined,
     });
+    const honoMidTicketBearer = `Bearer ${await signTicket(secretToBytes(TICKET_SECRET), 'hono-mid-sid')}`;
     const submitC = {
       req: {
         method: 'POST',
-        header: (n: string) =>
-          n.toLowerCase() === 'cookie' ? 'fdkey_session=hono-mid-sid' : undefined,
+        header: (n: string) => {
+          if (n.toLowerCase() === 'cookie') return 'fdkey_session=hono-mid-sid';
+          if (n.toLowerCase() === 'authorization') return honoMidTicketBearer;
+          return undefined;
+        },
         json: async () => ({ challenge_id: 'cid-test-1', answers: { type1: ['B'] } }),
       },
       set: vi.fn(),
@@ -1218,5 +1257,148 @@ describe('createFdkey: hono adapter', () => {
     const ctx = stored.get('fdkey') as FdkeyContext;
     expect(ctx.sessionId).toBe('hono-mid-sid');
     expect(ctx.score).toBe(1);
+  });
+});
+
+// ─── Ticket gating — new in 0.3.0 ────────────────────────────────────────────
+//
+// The HMAC-signed `challenge_ticket` field on 402 responses is what prevents
+// random scripts from hitting /fdkey/challenge or /fdkey/submit without ever
+// going through a protected route. Both endpoints require a valid Bearer
+// ticket; without one, they return 401. These tests pin the wire contract.
+
+describe('createFdkey: ticket gating (0.3.0)', () => {
+  it('the 402 response includes a `challenge_ticket` field bound to the minted session', async () => {
+    installMockVps();
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
+    const mw = fdkey.express.middleware();
+    const r = makeRes();
+    await mw(makeReq({ headers: {} }), r.res, vi.fn());
+    expect(r.status).toBe(402);
+    const body = r.body as Record<string, unknown>;
+    expect(typeof body.challenge_ticket).toBe('string');
+    expect((body.challenge_ticket as string).split('.').length).toBe(3); // JWS compact = 3 segments
+  });
+
+  it('/fdkey/challenge returns 401 fdkey_ticket_required when no Authorization header', async () => {
+    installMockVps();
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
+    const routes = fdkey.express.routes();
+    const r = makeRes();
+    await routes(
+      makeReq({ method: 'GET', path: '/fdkey/challenge', headers: {} }),
+      r.res,
+      vi.fn(),
+    );
+    expect(r.status).toBe(401);
+    expect((r.body as Record<string, unknown>).error).toBe('fdkey_ticket_required');
+  });
+
+  it('/fdkey/submit returns 401 fdkey_ticket_required when no Authorization header', async () => {
+    installMockVps();
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
+    const routes = fdkey.express.routes();
+    const r = makeRes();
+    await routes(
+      makeReq({
+        method: 'POST',
+        path: '/fdkey/submit',
+        headers: { cookie: 'fdkey_session=no-ticket-sid' },
+        body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
+      }),
+      r.res,
+      vi.fn(),
+    );
+    expect(r.status).toBe(401);
+    expect((r.body as Record<string, unknown>).error).toBe('fdkey_ticket_required');
+  });
+
+  it('/fdkey/challenge returns 401 fdkey_ticket_invalid for a ticket signed with the wrong secret', async () => {
+    installMockVps();
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
+    const routes = fdkey.express.routes();
+    const wrongTicket = await signTicket(
+      secretToBytes('a-completely-different-secret-also-long-enough'),
+      'any-sid',
+    );
+    const r = makeRes();
+    await routes(
+      makeReq({
+        method: 'GET',
+        path: '/fdkey/challenge',
+        headers: { authorization: `Bearer ${wrongTicket}` },
+      }),
+      r.res,
+      vi.fn(),
+    );
+    expect(r.status).toBe(401);
+    expect((r.body as Record<string, unknown>).error).toBe('fdkey_ticket_invalid');
+  });
+
+  it('/fdkey/submit returns 401 fdkey_ticket_session_mismatch when ticket sid != cookie sid', async () => {
+    installMockVps();
+    const fdkey = createFdkey({ apiKey: 'fdk_test', ticketSecret: TICKET_SECRET, vpsUrl: VPS_URL });
+    const routes = fdkey.express.routes();
+    // Ticket issued for session A but cookie carries session B → mismatch.
+    const r = makeRes();
+    await routes(
+      makeReq({
+        method: 'POST',
+        path: '/fdkey/submit',
+        headers: {
+          cookie: 'fdkey_session=session-B',
+          ...(await ticketAuth('session-A')),
+        },
+        body: { challenge_id: 'cid-test-1', answers: { type1: ['B'] } },
+      }),
+      r.res,
+      vi.fn(),
+    );
+    expect(r.status).toBe(401);
+    expect((r.body as Record<string, unknown>).error).toBe(
+      'fdkey_ticket_session_mismatch',
+    );
+  });
+
+  it('/fdkey/challenge returns 401 fdkey_ticket_expired for a ticket past its exp', async () => {
+    installMockVps();
+    const fdkey = createFdkey({
+      apiKey: 'fdk_test',
+      ticketSecret: TICKET_SECRET,
+      vpsUrl: VPS_URL,
+      ticketTtlSeconds: 1, // 1-second TTL so we can age it out quickly
+    });
+    const routes = fdkey.express.routes();
+    const t = await signTicket(secretToBytes(TICKET_SECRET), 'aged-sid', 1);
+    // Wait past expiry. jose enforces `exp` in seconds; sleep ~1.5s.
+    await new Promise((r) => setTimeout(r, 1500));
+    const r = makeRes();
+    await routes(
+      makeReq({
+        method: 'GET',
+        path: '/fdkey/challenge',
+        headers: { authorization: `Bearer ${t}` },
+      }),
+      r.res,
+      vi.fn(),
+    );
+    expect(r.status).toBe(401);
+    expect((r.body as Record<string, unknown>).error).toBe('fdkey_ticket_expired');
+  });
+
+  it('createFdkey throws when ticketSecret is missing', () => {
+    expect(() =>
+      createFdkey({ apiKey: 'fdk_test', vpsUrl: VPS_URL } as never),
+    ).toThrow(/ticketSecret/i);
+  });
+
+  it('createFdkey throws when ticketSecret is shorter than 32 bytes', () => {
+    expect(() =>
+      createFdkey({
+        apiKey: 'fdk_test',
+        ticketSecret: 'too-short',
+        vpsUrl: VPS_URL,
+      }),
+    ).toThrow(/32/);
   });
 });

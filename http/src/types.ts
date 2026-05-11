@@ -24,6 +24,21 @@ export interface FdkeyHttpConfig {
    *  server-to-server calls to `api.fdkey.com`. */
   apiKey: string;
 
+  /** HMAC secret used to sign short-lived agent tickets (the
+   *  `challenge_ticket` field on the 402 response). Required: must be a
+   *  string of at least 32 bytes (256 bits). Generate one with
+   *  `openssl rand -base64 48` and store it as a secret (env var, KV,
+   *  Wrangler secret, etc.) — alongside `apiKey`, never exposed to the
+   *  agent. Used internally to sign/verify the tickets that gate
+   *  `/fdkey/challenge` and `/fdkey/submit`. */
+  ticketSecret: string;
+
+  /** Ticket lifetime in seconds. Default: 300 (5 minutes). Long enough
+   *  for a slow agent to fetch a challenge, solve it, retry on a fresh
+   *  one, and submit. Short enough that a leaked ticket isn't a
+   *  long-lived authorization. */
+  ticketTtlSeconds?: number;
+
   /** VPS base URL. Default: `https://api.fdkey.com`. Override for self-hosted. */
   vpsUrl?: string;
 
@@ -184,6 +199,13 @@ export interface ChallengeBody {
 export interface ChallengeRequiredResponse extends ChallengeBody {
   error: 'fdkey_verification_required';
   reason: ChallengeReason;
+  /** Short-lived HMAC-signed authorization the agent presents on
+   *  `/fdkey/challenge` and `/fdkey/submit` as `Authorization: Bearer <ticket>`.
+   *  Bound to the freshly-minted session id and the configured
+   *  `ticketTtlSeconds` (default 300s / 5 min). Without it, those endpoints
+   *  return 401 — preventing random scripts from hammering the challenge
+   *  endpoint without ever interacting with the protected route. */
+  challenge_ticket: string;
 }
 
 /** Shape of the GET /fdkey/challenge response. Same wire fields as the 402

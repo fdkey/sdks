@@ -47,6 +47,9 @@ app.use(express.json());
 
 const fdkey = createFdkey({
   apiKey: process.env.FDKEY_API_KEY!,
+  // Required since 0.3.0 — HMAC secret for short-lived agent tickets.
+  // Generate with `openssl rand -base64 48` and store as a server secret.
+  ticketSecret: process.env.FDKEY_TICKET_SECRET!,
   policy: 'once_per_session',  // or { type: 'every_minutes', minutes: 15 }
 });
 
@@ -79,7 +82,10 @@ import Fastify from 'fastify';
 import { createFdkey } from '@fdkey/http';
 
 const app = Fastify();
-const fdkey = createFdkey({ apiKey: process.env.FDKEY_API_KEY! });
+const fdkey = createFdkey({
+  apiKey: process.env.FDKEY_API_KEY!,
+  ticketSecret: process.env.FDKEY_TICKET_SECRET!,
+});
 
 fdkey.fastify.registerRoutes(app);
 app.addHook('preHandler', fdkey.fastify.preHandler());
@@ -104,7 +110,10 @@ import { createFdkey, type FdkeyContext } from '@fdkey/http';
 type Variables = { fdkey: FdkeyContext };
 const app = new Hono<{ Variables: Variables }>();
 
-const fdkey = createFdkey({ apiKey: process.env.FDKEY_API_KEY! });
+const fdkey = createFdkey({
+  apiKey: process.env.FDKEY_API_KEY!,
+  ticketSecret: process.env.FDKEY_TICKET_SECRET!,
+});
 fdkey.hono.registerRoutes(app);
 app.use('/api/*', fdkey.hono.middleware());
 
@@ -130,11 +139,13 @@ GET /api/protected/foo
     "expires_in_seconds": 300,
     "puzzles": { "type1": [...], "type3": {...} },
     "submit_url": "/fdkey/submit",
+    "challenge_ticket": "eyJhbGciOiJIUzI1NiI...",     // ← NEW in 0.3.0
     "hint": "Solve the puzzles, then POST { challenge_id, answers } to /fdkey/submit on this same server. ..."
   }
 
 POST /fdkey/submit
   Cookie: fdkey_session=<same-uuid>
+  Authorization: Bearer eyJhbGciOiJIUzI1NiI...      // ← NEW in 0.3.0
   Content-Type: application/json
 
   { "challenge_id": "...", "answers": { "type1": [...], "type3": {...} } }
@@ -143,10 +154,18 @@ POST /fdkey/submit
 
   { "verified": true, "score": 1, "tier": "gold" }
 
-GET /api/protected/foo  (retry with same cookie)
+GET /api/protected/foo  (retry with same cookie — no ticket needed here)
 → HTTP/1.1 200 OK
   ...your handler's response...
 ```
+
+The `challenge_ticket` on the 402 is a short-lived HMAC-signed token
+(default 5-min TTL). Agents must present it as `Authorization: Bearer
+<ticket>` on `/fdkey/challenge` and `/fdkey/submit`. Without it, those
+endpoints return 401 — this prevents random scripts from hammering the
+challenge endpoint without ever interacting with a protected route.
+The ticket is bound to the freshly-minted session id, so an agent
+can't replay a ticket from one session against another.
 
 ## `reason` values
 
@@ -167,6 +186,8 @@ The split lets your dashboards separate "no one is authenticating" from
 ```ts
 createFdkey({
   apiKey: 'fdk_...',              // required, must start with `fdk_`
+  ticketSecret: '<32+ bytes>',     // required (0.3.0+) — HMAC secret for agent tickets
+  ticketTtlSeconds: 300,           // ticket lifetime, default 300 (5 min)
   vpsUrl: 'https://api.fdkey.com',
   difficulty: 'medium',            // 'easy' | 'medium' | 'hard'
   policy: 'once_per_session',      // or { type: 'every_minutes', minutes: 15 }

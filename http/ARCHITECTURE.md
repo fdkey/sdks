@@ -2,7 +2,22 @@
 
 > **Purpose.** Drop-in FDKEY verification middleware for plain HTTP backends — Express, Fastify, Hono. Companion to `@fdkey/mcp` for any backend that exposes a REST/HTTPS API rather than an MCP server.
 >
-> **Last verified against:** `src/` as of 2026-05-09 (initial publish 0.1.0 — session-mediated flow; agent never holds a JWT).
+> **Last verified against:** `src/` as of 2026-05-11 (0.3.0).
+>
+> **What's new since 0.2.x** (the previous reference baseline):
+> - **0.3.0** — HMAC-signed challenge tickets close the open
+>   `/fdkey/challenge` endpoint. The 402 response gains a
+>   `challenge_ticket` field; `/fdkey/challenge` and `/fdkey/submit`
+>   now require `Authorization: Bearer <ticket>` (401 otherwise).
+>   Tickets are short-lived (default 5 min), bound to the minted
+>   session id, and stateless (HS256 via `jose`). New required config
+>   field `ticketSecret`. New module `src/ticket.ts`. Submit
+>   additionally enforces ticket-sid == cookie-sid; mismatch returns
+>   `fdkey_ticket_session_mismatch`.
+>
+> Prior baseline (0.1.x – 0.2.1): session-mediated flow; agent never
+> holds a JWT; cookie/header/custom session strategies; Express,
+> Fastify, Hono adapters; browser widget at `@fdkey/http/client`.
 >
 > **Companion docs.**
 > - [../typescript/ARCHITECTURE.md](../typescript/ARCHITECTURE.md) — `@fdkey/mcp` (the MCP-native sibling); shares the JWT verify logic and the wire format.
@@ -28,21 +43,53 @@ Agent → GET /api/protected
    ↓ middleware sees no verified session
 HTTP 402 with challenge embedded
    Set-Cookie: fdkey_session=<uuid>; HttpOnly; Secure; SameSite=Lax
+   Body: { ..., challenge_ticket: "<HS256 JWT, sid-bound, 5-min TTL>" }
    ↓ agent solves the puzzles
 Agent → POST /fdkey/submit  (mounted by the SDK on the integrator's server)
    Cookie: fdkey_session=<same-uuid>
+   Authorization: Bearer <challenge_ticket>
    Body: { challenge_id, answers }
-   ↓
+   ↓ SDK: verify ticket → check ticket.sid == cookie sid → forward
 SDK forwards to api.fdkey.com/v1/submit using integrator's API key
    ↓ VPS scores, returns { verified, jwt }
 SDK verifies JWT offline against the well-known
    ↓ stores { verifiedAt, score, tier, claims } in the session store
 Returns to agent: { verified: true, score, tier }   ← no JWT in body
    ↓
-Agent → GET /api/protected (retry with same cookie)
+Agent → GET /api/protected (retry with same cookie — no ticket needed here)
    ↓ middleware looks up session → req.fdkey populated
 handler runs
 ```
+
+### Ticket lifecycle (0.3.0+)
+
+The SDK issues a **short-lived HMAC-signed ticket** on every 402 and
+requires it back on `/fdkey/challenge` and `/fdkey/submit`. This closes
+the abuse vector where random scripts could hit `/fdkey/challenge`
+indefinitely, burning the integrator's VPS quota without ever
+interacting with a protected route.
+
+- **Format.** Compact JWS (JWT), HS256. Claims: `iat`, `exp`, `sid`,
+  `iss: "fdkey-http-sdk"`. Signed with `FdkeyHttpConfig.ticketSecret`
+  (required, min 32 bytes).
+- **TTL.** Default 300s (5 min); configurable via `ticketTtlSeconds`.
+  Long enough for a slow agent to fetch, solve, retry, and submit;
+  short enough that a leaked ticket isn't a long-lived authorization.
+- **Reusable within TTL.** Not single-use — an agent that refreshes
+  the challenge then submits uses the same ticket twice. Simpler than
+  one-time semantics; doesn't need server-side revoke storage.
+- **Session binding.** The `sid` claim is the freshly-minted session
+  id. On submit, the ticket sid must match the cookie/header sid;
+  mismatch returns 401 `fdkey_ticket_session_mismatch`. This prevents
+  an attacker from replaying a ticket from one session against another.
+- **Stateless.** No server-side ticket storage; verification is pure
+  HMAC + claim check. Works across multi-process / multi-region
+  deployments without coordination.
+- **The middleware path doesn't require a ticket** — the protected
+  route is the entry point that *issues* tickets. Only `/fdkey/challenge`
+  and `/fdkey/submit` enforce them.
+
+See `src/ticket.ts` for the signing/verifying primitives.
 
 ### Why the integrator's API key never reaches the agent
 
@@ -175,6 +222,32 @@ Memory ceiling: 10 k × ~200 bytes ≈ 2 MB max regardless of churn. Same shape 
 - `buildChallengeRequiredResponse(challenge, reason, submitUrl)` shapes the 402 response — including `submit_url` pointing at the integrator's local route.
 
 `VpsHttpError` is thrown for non-2xx with `status` and parsed body. The middleware branches on `status >= 500` (treat as VPS down) vs `status >= 400` (treat as client/state error like `challenge_expired`).
+
+---
+
+### `src/ticket.ts` (new in 0.3.0)
+
+`signTicket(secretBytes, sid, ttlSeconds?)` and
+`verifyTicket(secretBytes, token)` using `jose`'s `SignJWT` /
+`jwtVerify` with HS256. Errors:
+
+- `TicketExpiredError` (code `fdkey_ticket_expired`) — token past
+  its `exp` claim.
+- `TicketInvalidError` (code `fdkey_ticket_invalid`) — anything else
+  (bad signature, malformed JWT, wrong issuer, missing claims).
+
+`secretToBytes(s)` is a thin `TextEncoder` wrapper exported alongside
+so `buildCore()` can pre-encode the secret once at startup and keep
+the hot path off `new TextEncoder()` per request.
+
+Constants:
+
+- `DEFAULT_TICKET_TTL_SECONDS = 300` — 5 min default.
+- `MIN_TICKET_SECRET_BYTES = 32` — HS256 minimum (256-bit hash output).
+
+Used by `index.ts` in `buildCore()` (pre-encode secret),
+`blockWithChallenge()` (sign on 402), and `requireValidTicket()`
+(verify on `/fdkey/challenge` and `/fdkey/submit`).
 
 ---
 
