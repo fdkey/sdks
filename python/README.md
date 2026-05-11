@@ -22,9 +22,14 @@
 **The SDK is puzzle-agnostic.** All agent-facing prose (puzzle text,
 per-type instructions, wire-format examples, timing framing) is rendered
 server-side by the VPS and passed through verbatim as the
-`fdkey_get_challenge` tool result (via the VPS's `mcp_response_text`
-field). Adding a new puzzle type or changing an answer format is a
-VPS-only concern — no SDK release needed.
+`fdkey_get_challenge` tool result. The VPS supplies the rendered
+directive in `ChallengeResponse.mcp_response_text` (sent for
+`client_type='mcp'`, which the SDK always sets); when present, the SDK
+returns it verbatim. When absent — e.g. against an older VPS — the SDK
+falls back to a puzzle-agnostic JSON dict (`header` + `puzzles` +
+`example_submission` + `footer`) that the agent can still consume.
+Adding a new puzzle type or changing an answer format is a VPS-only
+concern; no SDK release needed.
 
 ## Install
 

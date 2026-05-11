@@ -29,6 +29,7 @@ Public API:
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import threading
 import uuid
@@ -69,7 +70,7 @@ except ImportError:
         _mcp_request_ctx = None
 
 
-SDK_VERSION = "0.2.0"
+SDK_VERSION = "0.2.1"
 DEFAULT_VPS_URL = "https://api.fdkey.com"
 
 GET_CHALLENGE_TOOL = "fdkey_get_challenge"
@@ -366,76 +367,61 @@ def _read_server_info(server: Any) -> tuple[Optional[str], Optional[str]]:
     return name, version
 
 
+def _supports_kwarg(fn: Optional[Callable[..., Any]], kwarg: str) -> bool:
+    """True iff `fn` accepts a keyword argument named `kwarg`. Lets us decide
+    at registration time whether the underlying FastMCP API knows about the
+    `annotations` keyword — without using TypeError as a sentinel (which
+    could swallow unrelated errors like duplicate-name or bad-handler-shape)."""
+    if fn is None:
+        return False
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    return kwarg in sig.parameters
+
+
 def _register_fdkey_tools(server: Any, state: _FdkeyState) -> None:
     """Add the two FDKEY tools to the server. Uses whichever registration
     path FastMCP currently exposes (`add_tool` or `tool` decorator).
 
-    Annotations are passed only when the underlying API accepts them — older
-    FastMCP releases lack the `annotations` keyword on `add_tool` / `tool`,
-    so we try with-annotations first and fall back silently. This keeps the
-    SDK compatible with `mcp>=1.0.0` while opportunistically surfacing trust
-    hints on newer runtimes that support them."""
+    Annotations (`ToolAnnotations`) are passed only when the underlying API
+    advertises the `annotations` keyword — checked via signature inspection
+    rather than try/except so we don't silently swallow unrelated errors."""
 
-    def _try(fn: Callable[..., Any], with_annotations: dict[str, Any], without: dict[str, Any]) -> None:
-        try:
-            fn(**with_annotations)
-        except TypeError:
-            # Older FastMCP — no `annotations` keyword. Retry without.
-            fn(**without)
+    get_handler = _make_get_challenge_handler(state)
+    submit_handler = _make_submit_handler(state)
 
     add_tool = getattr(server, "add_tool", None)
     if callable(add_tool):
-        _try(
-            add_tool,
-            with_annotations={
-                "fn": _make_get_challenge_handler(state),
-                "name": GET_CHALLENGE_TOOL,
-                "description": GET_CHALLENGE_DESC,
-                "annotations": _GET_CHALLENGE_ANNOTATIONS,
-            },
-            without={
-                "fn": _make_get_challenge_handler(state),
-                "name": GET_CHALLENGE_TOOL,
-                "description": GET_CHALLENGE_DESC,
-            },
-        )
-        _try(
-            add_tool,
-            with_annotations={
-                "fn": _make_submit_handler(state),
-                "name": SUBMIT_CHALLENGE_TOOL,
-                "description": SUBMIT_CHALLENGE_DESC,
-                "annotations": _SUBMIT_CHALLENGE_ANNOTATIONS,
-            },
-            without={
-                "fn": _make_submit_handler(state),
-                "name": SUBMIT_CHALLENGE_TOOL,
-                "description": SUBMIT_CHALLENGE_DESC,
-            },
-        )
+        get_kwargs: dict[str, Any] = {
+            "fn": get_handler,
+            "name": GET_CHALLENGE_TOOL,
+            "description": GET_CHALLENGE_DESC,
+        }
+        submit_kwargs: dict[str, Any] = {
+            "fn": submit_handler,
+            "name": SUBMIT_CHALLENGE_TOOL,
+            "description": SUBMIT_CHALLENGE_DESC,
+        }
+        if _supports_kwarg(add_tool, "annotations"):
+            get_kwargs["annotations"] = _GET_CHALLENGE_ANNOTATIONS
+            submit_kwargs["annotations"] = _SUBMIT_CHALLENGE_ANNOTATIONS
+        add_tool(**get_kwargs)
+        add_tool(**submit_kwargs)
         return
 
     tool = getattr(server, "tool", None)
     if callable(tool):
-        try:
-            tool(
-                name=GET_CHALLENGE_TOOL,
-                description=GET_CHALLENGE_DESC,
-                annotations=_GET_CHALLENGE_ANNOTATIONS,
-            )(_make_get_challenge_handler(state))
-            tool(
-                name=SUBMIT_CHALLENGE_TOOL,
-                description=SUBMIT_CHALLENGE_DESC,
-                annotations=_SUBMIT_CHALLENGE_ANNOTATIONS,
-            )(_make_submit_handler(state))
-        except TypeError:
-            tool(name=GET_CHALLENGE_TOOL, description=GET_CHALLENGE_DESC)(
-                _make_get_challenge_handler(state)
-            )
-            tool(name=SUBMIT_CHALLENGE_TOOL, description=SUBMIT_CHALLENGE_DESC)(
-                _make_submit_handler(state)
-            )
+        get_kwargs = {"name": GET_CHALLENGE_TOOL, "description": GET_CHALLENGE_DESC}
+        submit_kwargs = {"name": SUBMIT_CHALLENGE_TOOL, "description": SUBMIT_CHALLENGE_DESC}
+        if _supports_kwarg(tool, "annotations"):
+            get_kwargs["annotations"] = _GET_CHALLENGE_ANNOTATIONS
+            submit_kwargs["annotations"] = _SUBMIT_CHALLENGE_ANNOTATIONS
+        tool(**get_kwargs)(get_handler)
+        tool(**submit_kwargs)(submit_handler)
         return
+
     raise RuntimeError(
         "fdkey: server has neither add_tool nor tool — is this a FastMCP server?"
     )

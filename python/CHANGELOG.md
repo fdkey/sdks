@@ -3,6 +3,47 @@
 All notable changes to `fdkey` (Python, PyPI) will be documented
 in this file.
 
+## 0.2.1 — 2026-05-11
+
+### Changed — review follow-up to 0.2.0
+
+Code-review polish on the 0.2.0 release. No behavior change for
+integrators; correctness and robustness improvements only.
+
+- **Annotation detection via `inspect.signature`** instead of
+  `try/except TypeError`. The previous fallback would silently swallow
+  unrelated `TypeError`s (bad handler signature, duplicate name, etc.)
+  and re-register the tool without annotations. The new helper
+  `_supports_kwarg(fn, 'annotations')` inspects the callable's
+  signature at registration time and only includes the keyword when
+  it's actually accepted. No retries; no exception sentinel.
+- **Handlers built once.** `_make_get_challenge_handler(state)` and
+  `_make_submit_handler(state)` are now called exactly once per
+  registration instead of potentially twice on the old fallback path.
+
+### Added — tests
+
+- `test_challenge_text_returns_mcp_response_text_verbatim_when_present`
+  — confirms the canonical 0.2.0 passthrough path.
+- `test_challenge_text_falls_back_to_json_when_mcp_response_text_absent`
+  — confirms the puzzle-agnostic JSON fallback (header + puzzles +
+  example_submission + footer).
+- `test_challenge_text_falls_back_when_mcp_response_text_is_empty_string`
+  — empty string treated as "not provided"; agent gets the fallback
+  instead of an empty result.
+- `test_tools_are_registered_with_stable_mcp_annotations` — both
+  injected tools carry `ToolAnnotations(title, readOnlyHint=False,
+  destructiveHint=False, idempotentHint=False, openWorldHint=True)`.
+- `test_supports_kwarg_introspection` — covers the new signature-
+  inspection helper, including graceful False on unintrospectable
+  callables.
+
+### Docs
+
+- README now references the `mcp_response_text` field by name so
+  Python integrators searching for the wire-format contract can find
+  it without diving into CHANGELOG / ARCHITECTURE.
+
 ## 0.2.0 — 2026-05-11
 
 ### Changed — parity with @fdkey/mcp 0.3.1 (TypeScript)

@@ -137,17 +137,93 @@ breaks `fdkey_get_challenge` → `fdkey_submit_challenge` if the agent
 pauses too long between calls.
 
 Pass a `SessionStore` implementation backed by `ctx.storage.sql` so
-verification state survives hibernation. The SDK exposes the
+verification state survives hibernation. The SDK exports the
 `SessionStore` interface, the `SessionState` type, and a `newSession()`
 factory so integrators can wire one up without duplicating the field
-defaults. See the `mcp-cloudflare` demo in the FDKEY monorepo for a
-reference implementation (~50 LOC, uses a Proxy on the returned state to
-flush each property write to SQLite).
+defaults.
 
-The SDK mutates session state via top-level assignments only — a single
-`set` trap on the returned Proxy is sufficient to catch every mutation.
-This contract is documented on the `SessionStore` interface and enforced
-by an SDK test.
+The SDK mutates session state via top-level property assignment only — a
+single `set` trap on a Proxy is sufficient to catch every mutation. This
+contract is documented on the `SessionStore` interface and enforced by
+an SDK test (`top-level-mutations-only` in `src/e2e.test.ts`), so it's
+safe to rely on it in the integrator-side implementation.
+
+Reference implementation for SQLite-backed Durable Objects (works with
+`new_sqlite_classes` in `wrangler.toml`):
+
+```ts
+import { newSession, type SessionState, type SessionStore } from '@fdkey/mcp';
+
+export function createDurableFdkeySessionStore(
+  storage: DurableObjectStorage,
+): SessionStore {
+  storage.sql.exec(`
+    CREATE TABLE IF NOT EXISTS fdkey_session (
+      id              TEXT PRIMARY KEY,
+      state           TEXT NOT NULL,
+      last_touched_at INTEGER NOT NULL
+    )
+  `);
+
+  const read = (id: string): SessionState | undefined => {
+    const rows = storage.sql
+      .exec<{ state: string }>('SELECT state FROM fdkey_session WHERE id = ? LIMIT 1', id)
+      .toArray();
+    return rows.length ? (JSON.parse(rows[0].state) as SessionState) : undefined;
+  };
+
+  const write = (id: string, state: SessionState) => {
+    storage.sql.exec(
+      'INSERT OR REPLACE INTO fdkey_session (id, state, last_touched_at) VALUES (?, ?, ?)',
+      id, JSON.stringify(state), state.lastTouchedAt,
+    );
+  };
+
+  const proxify = (id: string, state: SessionState): SessionState =>
+    new Proxy(state, {
+      set(target, key, value) {
+        (target as unknown as Record<string | symbol, unknown>)[key] = value;
+        write(id, target);
+        return true;
+      },
+    });
+
+  return {
+    get(id) {
+      const existing = read(id);
+      if (existing) {
+        existing.lastTouchedAt = Date.now();
+        write(id, existing);
+        return proxify(id, existing);
+      }
+      const fresh = newSession();
+      write(id, fresh);
+      return proxify(id, fresh);
+    },
+    peek(id) { return read(id); },
+    size() {
+      const rows = storage.sql
+        .exec<{ n: number }>('SELECT COUNT(*) AS n FROM fdkey_session')
+        .toArray();
+      return rows[0]?.n ?? 0;
+    },
+  };
+}
+```
+
+Wire it into your `McpAgent.init()`:
+
+```ts
+async init(): Promise<void> {
+  const raw = new McpServer({ name: 'my-server', version: '1.0.0' });
+  const wrapped = withFdkey(raw, {
+    apiKey: this.env.FDKEY_API_KEY,
+    sessionStore: createDurableFdkeySessionStore(this.ctx.storage),
+    protect: { /* ... */ },
+  });
+  this.server = wrapped;
+}
+```
 
 ### Failure-mode defaults
 
