@@ -2,6 +2,32 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.2.10 — 2026-05-11
+
+### Changed — lock down the SessionStore mutation contract
+
+Review follow-up to 0.2.9 (pluggable SessionStore). The Proxy-on-get
+pattern integrators are expected to use for persistent backings only
+works if the SDK keeps its session-state mutations at the top level.
+Until now that was an implicit invariant; this release makes it
+explicit and enforced.
+
+- **SessionStore interface JSDoc** documents the mutation contract:
+  the SDK assigns top-level fields by direct assignment only — no
+  nested writes, no `delete`, no replacing the reference returned by
+  `get(id)`. Integrators wiring a Proxy-backed store can rely on a
+  single `set` trap to capture every mutation.
+- **New test: `top-level-mutations-only`** (in `e2e.test.ts`). Drives
+  the full get/submit flow through a custom `sessionStore` whose
+  returned state is a recursive recording Proxy. Asserts (a) the
+  custom store was used (plumbing), (b) every recorded write happened
+  at the top level (path depth 0), and (c) every written key is on the
+  canonical SessionState whitelist. Adding a new mutation site
+  requires updating the whitelist — that's the forcing function that
+  keeps the contract live.
+
+No code-flow changes. Pure contract hardening + version bump.
+
 ## 0.2.9 — 2026-05-11
 
 ### Fixed — orphaned challenges on Cloudflare Workers / DO hibernation

@@ -24,6 +24,43 @@ export interface SessionStore {
   peek(id: string): SessionState | undefined;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// SessionStore mutation contract (for integrators implementing this interface)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The SDK mutates the SessionState returned by `get(id)` via DIRECT TOP-LEVEL
+// property assignment only. Examples (exhaustive as of 0.2.9):
+//   session.pendingChallengeId = challengeId
+//   session.pendingChallengeId = null
+//   session.verified = true
+//   session.verifiedAt = Date.now()
+//   session.freshVerificationAvailable = true | false
+//   session.lastClaims = decodedJwt
+//   session.lastTouchedAt = now
+//   session.clientInfo ??= latestClientInfo
+//   session.protocolVersion ??= latestProtocolVersion
+//   session.mcpSessionId ??= sid
+//   session.transport = 'http' | 'stdio' | 'unknown'
+//
+// The SDK does NOT:
+//   - mutate nested object fields in place (e.g. `session.clientInfo.name = X`)
+//   - `delete` fields off the SessionState
+//   - replace the SessionState reference returned by `get(id)`
+//
+// This contract matters for integrators using a Proxy-on-get pattern to back
+// the store with external persistence (DO storage, Redis, etc.). A single
+// `set` trap is sufficient to catch every SDK mutation — there's no need to
+// recursively proxify nested objects or implement `deleteProperty`.
+//
+// If you're adding a new SDK code path that mutates session state: keep
+// assignments at the top level. If you must mutate nested state, replace the
+// nested object instead (e.g. `session.clientInfo = { ...session.clientInfo, name: X }`)
+// so the top-level assignment fires.
+//
+// There's a test (`index.test.ts` — top-level-mutations-only) that uses a
+// recording Proxy to enforce this contract; it will fail if a new mutation
+// site violates it.
+
 /** Bounded session store. Memory is bounded by `maxSize` (the hard guarantee).
  *  Two eviction policies cooperate:
  *

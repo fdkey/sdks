@@ -254,3 +254,133 @@ describe('e2e: full /v1/challenge → /v1/submit → JWT verify round-trip', () 
     expect(ctx!.score).toBeNull();
   });
 });
+
+describe('SessionStore: pluggable + top-level-mutations-only contract', () => {
+  // Whitelist of field names the SDK is permitted to assign on SessionState.
+  // If a new field is added to SessionState and the SDK starts writing to it,
+  // add it here. If a test fails on a name NOT in this set, the SDK has either
+  // grown a new mutation site (update the whitelist) or violated the contract
+  // (nested write — fix the SDK).
+  const ALLOWED_TOP_LEVEL_KEYS = new Set([
+    'verified',
+    'verifiedAt',
+    'lastTouchedAt',
+    'freshVerificationAvailable',
+    'pendingChallengeId',
+    'lastClaims',
+    'clientInfo',
+    'protocolVersion',
+    'mcpSessionId',
+    'transport',
+  ]);
+
+  it('uses config.sessionStore when provided, and the SDK only mutates top-level fields', async () => {
+    const mock = installMockVps();
+    mock.submitJwt = await signTestJwt({ score: 1.0, tier: 'gold' });
+
+    // Recording store: wraps an in-memory Map. Each call to get() returns a
+    // Proxy that captures (path, key) for every property write. A nested
+    // write would record a key off a *different* target object than the top
+    // SessionState — we tag each proxy with `__pathLength` to distinguish.
+    const writes: Array<{ key: string; pathLength: number }> = [];
+    const getCalls: string[] = [];
+    const peekCalls: string[] = [];
+    const inner = new Map<string, unknown>();
+
+    function newSessionState() {
+      return {
+        verified: false,
+        verifiedAt: null,
+        lastTouchedAt: Date.now(),
+        freshVerificationAvailable: false,
+        pendingChallengeId: null,
+        lastClaims: null,
+        clientInfo: null,
+        protocolVersion: null,
+        mcpSessionId: null,
+        transport: 'unknown',
+      };
+    }
+
+    function proxifyDeep(target: object, depth: number): object {
+      return new Proxy(target, {
+        get(t, key, recv) {
+          const v = Reflect.get(t, key, recv);
+          // If the SDK reads a nested object and intends to mutate it, the
+          // mutation would land on a proxy with depth > 0, which we'd catch
+          // below. Re-proxify nested objects so the recording is recursive.
+          if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+            return proxifyDeep(v as object, depth + 1);
+          }
+          return v;
+        },
+        set(t, key, value) {
+          writes.push({ key: String(key), pathLength: depth });
+          return Reflect.set(t, key, value);
+        },
+      });
+    }
+
+    const customStore = {
+      get(id: string) {
+        getCalls.push(id);
+        let s = inner.get(id);
+        if (!s) {
+          s = newSessionState();
+          inner.set(id, s);
+        }
+        return proxifyDeep(s as object, 0) as never;
+      },
+      peek(id: string) {
+        peekCalls.push(id);
+        return inner.get(id) as never | undefined;
+      },
+      size() {
+        return inner.size;
+      },
+    };
+
+    const server = new McpServer({ name: 'e2e-test', version: '1.0.0' });
+    const wrapped = withFdkey(server, {
+      apiKey: 'fdk_e2e_test',
+      vpsUrl: VPS_URL,
+      sessionStore: customStore,
+      protect: { sensitive: { policy: 'once_per_session' } },
+    });
+
+    // Drive the full flow — exercises every code path that mutates session state.
+    await callRegisteredTool(wrapped, 'fdkey_get_challenge', {}, { sessionId: 'ssa' });
+    await callRegisteredTool(
+      wrapped,
+      'fdkey_submit_challenge',
+      { answers: { type1: ['B'] } },
+      { sessionId: 'ssa' },
+    );
+    // getFdkeyContext should peek, not get.
+    getFdkeyContext(wrapped, { sessionId: 'ssa' });
+
+    // PLUMBING: the custom store was invoked.
+    expect(getCalls.length).toBeGreaterThan(0);
+    expect(peekCalls).toContain('ssa');
+
+    // CONTRACT: every write recorded was on the top-level state object
+    // (pathLength === 0) and the key is in the SessionState whitelist.
+    expect(writes.length).toBeGreaterThan(0);
+    for (const w of writes) {
+      expect(
+        w.pathLength,
+        `nested write on key "${w.key}" — SDK violated top-level-only contract`,
+      ).toBe(0);
+      expect(
+        ALLOWED_TOP_LEVEL_KEYS.has(w.key),
+        `unknown SessionState field "${w.key}" — update ALLOWED_TOP_LEVEL_KEYS or fix the SDK`,
+      ).toBe(true);
+    }
+
+    // Sanity: the canonical mutations actually happened.
+    const writtenKeys = new Set(writes.map((w) => w.key));
+    expect(writtenKeys.has('pendingChallengeId')).toBe(true);
+    expect(writtenKeys.has('verified')).toBe(true);
+    expect(writtenKeys.has('verifiedAt')).toBe(true);
+  });
+});
