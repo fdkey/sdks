@@ -183,9 +183,14 @@ describe('e2e: full /v1/challenge → /v1/submit → JWT verify round-trip', () 
     const body1 = mock.lastChallengeBody as Record<string, unknown>;
     expect(body1.client_type).toBe('mcp');
     expect(body1.difficulty).toBe('medium');
-    const challengePayload = JSON.parse(r1.content[0].text!);
-    expect(challengePayload.puzzles).toBeDefined();
-    expect(challengePayload.types_served).toEqual(['type1', 'type3']);
+    // get_challenge returns a directive-shaped text content (not JSON) as of
+    // 0.2.8 — see formatChallengeForMcp for rationale. Per-puzzle rendering
+    // depends on the real VPS shape (not this mock's stub); just assert the
+    // frame markers are present.
+    const challengeText = r1.content[0].text!;
+    expect(challengeText).toMatch(/ACTION REQUIRED/);
+    expect(challengeText).toMatch(/LITERAL ARGUMENTS/);
+    expect(challengeText).toMatch(/NEXT ACTION/);
 
     // 2. Agent calls fdkey_submit_challenge with answers → middleware POSTs
     //    /v1/submit, gets a JWT, verifies it offline against the mock

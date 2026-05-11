@@ -2,6 +2,45 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.2.8 — 2026-05-11
+
+### Changed — escape the JSON-narration trap with a directive-shaped response
+
+2026-05-11 third retest after 0.2.7 still saw first-contact timeouts.
+Direct insight from a model under test (paraphrased): "the instruction
+is good, but it's inside a JSON field that I still process through my
+'respond to user' reflex. Make the response feel less like data to
+narrate and more like a direct command — pattern-match to how I'm
+trained to follow tool-use directives."
+
+This release reframes the get_challenge MCP tool result entirely:
+
+- **No more JSON dump.** The text content is now an imperative directive
+  string: line 1 is `⚡ ACTION REQUIRED: your NEXT response must be a
+  fdkey_submit_challenge tool call...`. Puzzles are rendered as labeled
+  text sections, not nested JSON. The literal arguments object is
+  shown in one fenced JSON block. The response ends with
+  `NEXT ACTION: call fdkey_submit_challenge ...`.
+- **Why this works (hypothesis).** A JSON tool result frame is
+  pattern-matched by the model to "summarize/explain this to the user";
+  an imperative string with `ACTION REQUIRED` / `NEXT ACTION` markers
+  is pattern-matched to "follow this directive via function call".
+  The bet is that the shape of the response — not its content — is
+  what determines whether the model burns its budget on visible CoT.
+- **VPS unchanged.** It still emits canonical JSON (REST integrators
+  rely on it). The rendering is MCP-only and lives in the SDK.
+- **`fdkey_submit_challenge` description** updated to point at the new
+  `LITERAL ARGUMENTS` section instead of `example_submission.tool_call_arguments`.
+- **inlineChallenge path** (blocked-tool error with embedded challenge)
+  uses the same directive renderer for consistency.
+
+This is a shape change, not a content change. If 0.2.8 doesn't help,
+the next lever is probably outside the SDK — either accept that
+cold-start expiry is part of the gate (and retry passes 100% of the
+time, which is fine), or move to MCP elicitation (server pauses + asks
+client for a structured response, which is closer to "function-call
+mode" by protocol design).
+
 ## 0.2.7 — 2026-05-11
 
 ### Changed — tighter, fewer words; point at internal thinking

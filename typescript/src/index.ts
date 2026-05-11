@@ -29,7 +29,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.2.7';
+const SDK_VERSION = '0.2.8';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -157,7 +157,7 @@ const SUBMIT_CHALLENGE_DESC =
   'Do NOT pass challenge_id; the SDK injects it from session state. ' +
   'For a typical type1+type3 challenge: ' +
   'fdkey_submit_challenge({"answers":{"type1":[{"n":1,"answer":"B"},{"n":2,"answer":"A"},{"n":3,"answer":"C"}],"type3":{"n":1,"answer":"F > A > B > G > C"}}}). ' +
-  'The get_challenge response carries `example_submission.tool_call_arguments` — copy that, swap in your real answers, pass it as the tool argument. ' +
+  'The get_challenge response contains a `LITERAL ARGUMENTS` section with the exact JSON to use — copy it, swap in your real answers, pass it as the `answers` tool argument. ' +
   'Use the EXACT letters from each puzzle\'s options. ' +
   'On verified:true, retry the blocked tool. On verified:false, call fdkey_get_challenge to retry.';
 
@@ -196,18 +196,82 @@ function rewriteExampleForMcp(vpsExample: unknown): unknown {
   };
 }
 
-function challengePayload(c: ChallengeResponse) {
-  return {
-    expires_in_seconds: c.expires_in_seconds ?? expiresInSeconds(c.expires_at),
-    difficulty: c.difficulty,
-    types_served: c.types_served,
-    header: c.header,
-    puzzles: c.puzzles,
-    // Reshape VPS's HTTP-wire example into the MCP tool-call argument shape.
-    // See `rewriteExampleForMcp` for the rationale.
-    example_submission: rewriteExampleForMcp(c.example_submission),
-    footer: c.footer,
-  };
+/** Render the challenge as a directive-shaped text content for MCP agents.
+ *  Background: returning the challenge as a JSON dump triggers the agent's
+ *  "narrate the tool result to the user" reflex — Claude Desktop's 2026-05-11
+ *  transcript showed ~600 tokens of visible chain-of-thought between get and
+ *  submit, which at 50-80 tok/s burned 8-15s of the 60s TTL before submit
+ *  was queued. Direct insight from a model under test: the JSON frame
+ *  pattern-matches to "tool result → explain to user"; an imperative,
+ *  command-shaped string pattern-matches to "directive → function-call".
+ *  This renderer reframes the response from data-to-narrate into
+ *  command-to-execute: ACTION REQUIRED at line 1, puzzles and literal
+ *  arguments as labeled sections, NEXT ACTION at the bottom. The VPS still
+ *  emits its canonical JSON for REST integrators; this conversion is
+ *  MCP-only and happens in the SDK. */
+function formatChallengeForMcp(c: ChallengeResponse): string {
+  const parts: string[] = [];
+
+  const ttl = c.expires_in_seconds ?? expiresInSeconds(c.expires_at);
+
+  parts.push(
+    '⚡ ACTION REQUIRED: your NEXT response must be a fdkey_submit_challenge tool call. ' +
+    'Generate NO text before that call. Reason internally only (extended thinking, ' +
+    'NOT visible chat). Any visible prose burns the TTL budget. ' +
+    'Save all explanation for AFTER the verdict.'
+  );
+  parts.push(`Timer: ~${ttl}s remaining on this challenge.`);
+
+  parts.push('');
+  parts.push('━━━ PUZZLES ━━━');
+
+  const puzzles = c.puzzles ?? {};
+
+  const t1 = puzzles['type1'] as
+    | { instructions?: string; questions?: Array<{ n: number; question: string; options: string[] }> }
+    | undefined;
+  if (t1?.questions) {
+    parts.push('');
+    parts.push(`[Type 1] ${t1.instructions ?? ''}`);
+    for (const q of t1.questions) {
+      parts.push('');
+      parts.push(`${q.n}. ${q.question}`);
+      for (const opt of q.options) parts.push(`   ${opt}`);
+    }
+  }
+
+  const t3 = puzzles['type3'] as
+    | { instructions?: string; n?: number; concept?: string; options?: string[] }
+    | undefined;
+  if (t3?.options) {
+    parts.push('');
+    parts.push(`[Type 3] ${t3.instructions ?? ''}`);
+    parts.push(`Concept: "${t3.concept ?? ''}"`);
+    parts.push('Options:');
+    for (const opt of t3.options) parts.push(`  ${opt}`);
+  }
+
+  // Literal tool arguments — extracted from the SDK-rewritten example.
+  parts.push('');
+  parts.push('━━━ LITERAL ARGUMENTS for fdkey_submit_challenge ━━━');
+  parts.push(
+    'Copy this object as the `answers` tool argument. Replace placeholder letters ' +
+    'with your real answers. Do NOT include challenge_id (the SDK injects it).'
+  );
+  const ex = rewriteExampleForMcp(c.example_submission) as
+    | { tool_call_arguments?: { answers?: unknown } }
+    | undefined;
+  const args = ex?.tool_call_arguments?.answers ?? {};
+  parts.push('');
+  parts.push('```json');
+  parts.push(JSON.stringify(args, null, 2));
+  parts.push('```');
+
+  parts.push('');
+  parts.push('━━━');
+  parts.push('NEXT ACTION: call fdkey_submit_challenge with `answers` set to the JSON above (placeholders replaced). No prose first.');
+
+  return parts.join('\n');
 }
 
 /**
@@ -388,7 +452,10 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
       try {
         const challenge = await vpsClient.fetchChallenge(meta);
         session.pendingChallengeId = challenge.challenge_id;
-        return mkResult(challengePayload(challenge));
+        // Directive-shaped text content (not JSON) — see formatChallengeForMcp
+        // for the rationale. JSON form triggers the agent's "narrate the tool
+        // result" reflex, which burns 8-15s of the 60s budget on visible CoT.
+        return { content: [{ type: 'text' as const, text: formatChallengeForMcp(challenge) }] };
       } catch (err) {
         return mkError(`fdkey_service_unavailable: ${String(err)}`);
       }
@@ -663,8 +730,8 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
             const challenge = await vpsClient.fetchChallenge(meta);
             session.pendingChallengeId = challenge.challenge_id;
             return mkError(
-              `fdkey_verification_required. Solve the challenge below then call ${SUBMIT_CHALLENGE_TOOL} with your answers, then retry this tool.\n` +
-                JSON.stringify(challengePayload(challenge))
+              `fdkey_verification_required. Solve the challenge below then call ${SUBMIT_CHALLENGE_TOOL}, then retry this tool.\n\n` +
+                formatChallengeForMcp(challenge)
             );
           } catch {
             if (onVpsError === 'allow') return original(...cbArgs);
