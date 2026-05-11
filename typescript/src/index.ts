@@ -34,7 +34,7 @@ export { LazyVpsRouter as __LazyVpsRouterForTesting };
  *  on every challenge fetch so we can correlate failures with SDK releases.
  *  MUST be kept in sync with package.json version on every release — there's
  *  a smoke test that checks this match. */
-const SDK_VERSION = '0.3.0';
+const SDK_VERSION = '0.3.1';
 
 /** Default VPS URL used when no `vpsUrl` and no `discoveryUrl` are provided. */
 const DEFAULT_VPS_URL = 'https://api.fdkey.com';
@@ -394,9 +394,28 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
   }
 
   // --- Injected tool: fdkey_get_challenge ---
+  //
+  // Annotations are deliberately stable across all puzzle types / formats /
+  // timing config — they describe what the tool DOES at the protocol level,
+  // not what it serves. Clients (e.g. Claude Desktop) use these for trust
+  // categorization and approval defaults; keeping them invariant means a
+  // puzzle change on the VPS doesn't churn the client-side trust fingerprint.
+  //   readOnlyHint: false      — creates a server-side challenge/session row
+  //   destructiveHint: false   — never deletes/overwrites existing data
+  //   idempotentHint: false    — each call returns a fresh puzzle
+  //   openWorldHint: true      — talks to the FDKEY VPS (external service)
   server.registerTool(
     GET_CHALLENGE_TOOL,
-    { description: GET_CHALLENGE_DESC },
+    {
+      description: GET_CHALLENGE_DESC,
+      annotations: {
+        title: 'FDKEY: Get Verification Challenge',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
     async (extra) => {
       const e = extra as { sessionId?: string };
       const session = getSession(e.sessionId ?? 'stdio');
@@ -423,6 +442,12 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
   // exact wire shape at runtime via the `example_submission` field on the
   // get_challenge response — which the VPS renders puzzle-aware. Iteration on
   // puzzles is a VPS-only concern.
+  // Annotations are deliberately stable across all puzzle types / formats /
+  // timing config — see fdkey_get_challenge registration for rationale.
+  //   readOnlyHint: false      — records a submission row on the VPS
+  //   destructiveHint: false   — never deletes/overwrites existing data
+  //   idempotentHint: false    — each submission is scored independently
+  //   openWorldHint: true      — talks to the FDKEY VPS (external service)
   server.registerTool(
     SUBMIT_CHALLENGE_TOOL,
     {
@@ -434,6 +459,13 @@ export function withFdkey(server: McpServer, config: FdkeyConfig): McpServer {
             'Per-type answers object. Copy the literal shape from the ' +
             '`example_submission` field of the get_challenge response.'
           ),
+      },
+      annotations: {
+        title: 'FDKEY: Submit Verification Answers',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
       },
     },
     async (args, extra) => {

@@ -2,6 +2,38 @@
 
 All notable changes to `@fdkey/mcp` will be documented in this file.
 
+## 0.3.1 — 2026-05-11
+
+### Added — stable MCP tool annotations
+
+Both injected tools (`fdkey_get_challenge`, `fdkey_submit_challenge`) now
+carry the formal MCP `annotations` block:
+
+- `title` — human-readable display label for clients that surface it.
+- `readOnlyHint: false` — both tools modify server-side state (a session
+  row, a submission row).
+- `destructiveHint: false` — neither tool deletes or overwrites
+  existing data. This is the meaningful signal for clients deciding
+  approval defaults: we write, but we never destroy.
+- `idempotentHint: false` — each `get_challenge` returns a fresh
+  puzzle; each `submit_challenge` is scored independently.
+- `openWorldHint: true` — both tools talk to the FDKEY VPS (external
+  service).
+
+These values are intentionally puzzle-agnostic and timing-agnostic —
+they describe what the tools DO at the protocol level, not what they
+serve. Adding a new puzzle type, changing answer formats, or tweaking
+TTL will not require updating any annotation. That keeps the client-
+side trust fingerprint stable across VPS prompt iterations.
+
+Why this matters: some MCP clients (incl. Claude Desktop) hash the
+tool definition surface — `name + description + inputSchema +
+annotations` — to decide "have I seen this tool before, and should
+I auto-approve?" Stable annotations give the client a consistent
+trust signal even when descriptions or schemas evolve.
+
+No behavior change for callers. Pure additive metadata.
+
 ## 0.3.0 — 2026-05-11
 
 ### Changed — SDK is now puzzle-agnostic; all agent-facing prose lives on the VPS
